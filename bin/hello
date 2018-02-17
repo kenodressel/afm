@@ -43,9 +43,10 @@ def receive_camera_data(camera_data):
 
     if CAMERA_STATE == 'READY':
         # check if movement occured and set SLIDING_DETECTED
-        print("DATA FROM CAMERA")
-        print(camera_data)
-        if np.random.random() > 0.9:
+        # print("DATA FROM CAMERA")
+        # print(camera_data)
+        if np.random.random() > 0.995:
+            print("FAKING SLIDE")
             SLIDING_DETECTED = True
         pass
 
@@ -81,7 +82,6 @@ def rotate_arm(group, angles, position):
         pose_target = Pose()
 
         q = quaternion_from_euler(*a)
-        print("Going to " + str(max(a) * (180 / np.pi)) + " degree")
 
         pose_target.orientation.x = q[0]
         pose_target.orientation.y = q[1]
@@ -93,18 +93,22 @@ def rotate_arm(group, angles, position):
 
         group.set_pose_target(pose_target)
 
+        if SLIDING_DETECTED:
+            print("SLIDING RECEIVED, STOPPING")
+            SLIDING_DETECTED = False
+            return "SLIDING"
+
+        print("Going to " + str(max(a) * (180 / np.pi)) + " degree")
+
         group.go(wait=True)
         # rospy.sleep(1)
 
         if REAL_ROBOT_CONNECTED:
             get_difference(q, position)
 
-        if SLIDING_DETECTED:
-            SLIDING_DETECTED = False
-            return "SLIDING"
-
         # RESET
         group.clear_pose_targets()
+
 
         if rospy.is_shutdown():
             exit(0)
@@ -153,8 +157,12 @@ def run_code():
     else:
         print("============ COULD NOT find real robot")
 
-    print("============ Subscribing to /afm/camera")
-    rospy.Subscriber("/afm/camera", PolygonStamped, receive_camera_data)
+    if '/afm/camera' in topics:
+        print("============ FOUND camera")
+        print("============ Subscribing to /afm/camera")
+        rospy.Subscriber("/afm/camera", PolygonStamped, receive_camera_data)
+    else:
+        print("============ COULD NOT find camera, running blind")
 
     rospy.init_node('motion_plan', anonymous=True)
 
