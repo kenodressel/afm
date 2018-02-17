@@ -1,0 +1,165 @@
+#! /usr/bin/env python
+
+import sys
+import rospy
+import numpy as np
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
+from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Pose
+from geometry_msgs.msg import PolygonStamped
+
+import moveit_commander
+# import moveit_msgs.msg
+# import geometry_msgs.msg
+
+
+
+def normQ(q):
+    a, b, c, d = q
+    Z = np.sqrt(a ** 2 + b ** 2 + c ** 2 + d ** 2)
+    return np.array([a / Z, b / Z, c / Z, d / Z])
+
+
+REAL_POSE = []
+REAL_ROBOT_CONNTECTED = False
+
+def receive_pose_data(robot_data):
+    global REAL_POSE
+    REAL_POSE = robot_data.pose
+
+def receive_camera_data(camera_data):
+    print("DATA FROM CAMERA")
+    print(camera_data)
+    pass
+
+def get_difference(planned_q, planned_coord):
+    real_position = REAL_POSE.position
+    real_q = REAL_POSE.orientation
+    difference_position = np.array([real_position.x, real_position.y, real_position.z]) - np.array(planned_coord)
+    difference_orientation = np.array([real_q.x, real_q.y, real_q.z, real_q.w]) - np.array(planned_q)
+    print(difference_orientation)
+    print(difference_position)
+    # EULER
+    real_euler = euler_from_quaternion(np.array([real_q.x, real_q.y, real_q.z, real_q.w]))
+    planned_euler = euler_from_quaternion(planned_q)
+    difference_euler = np.array(real_euler - planned_euler)
+    print(difference_euler)
+    pass
+
+if __name__ == '__main__':
+
+    print("============ Starting setup")
+
+    # init move_it commander with mysterious sys argv TODO:find out what the sys.argv is
+    moveit_commander.roscpp_initialize(sys.argv)
+
+    print("============ moveit_commander init successful")
+
+    topics = [name for (name, _) in rospy.get_published_topics()]
+
+    if('/j2n6s300_driver/out/tool_pose' in topics):
+        print("============ FOUND real robot")
+        print("============ Subscribing to /j2n6s300_driver/out/tool_pose")
+        rospy.Subscriber("/j2n6s300_driver/out/tool_pose", PoseStamped, receive_pose_data)
+        REAL_ROBOT_CONNTECTED = True
+    else:
+        print("============ COULD NOT find real robot")
+
+    print("============ Subscribing to /afm/camera")
+    rospy.Subscriber("/afm/camera", PolygonStamped, receive_camera_data)
+    
+    rospy.init_node('motion_plan', anonymous=True)
+
+    print("============ ROS node init successful")
+
+    robot = moveit_commander.RobotCommander()
+    scene = moveit_commander.PlanningSceneInterface()
+    group = moveit_commander.MoveGroupCommander("arm")
+
+    print("============ objects init successful")
+
+    print("============ Reference frame: %s" % group.get_planning_frame())
+
+    print("============ Reference frame: %s" % group.get_end_effector_link())
+
+    print("============ Robot Groups:")
+    print(robot.get_group_names())
+
+    print("============ Printing robot state")
+    print(robot.get_current_state())
+    print("============")
+
+    print("============ Generating plan 1")
+    # TODO move inside loop
+    pose_target = Pose()
+
+    print("STARTING COMMANDS")
+    base_position = [0, 0.6, 0.5]
+
+
+    for i in np.linspace(0,0.5,50):
+        q = quaternion_from_euler(0,i * np.pi,0)
+
+        pose_target.orientation.x = q[0]
+        pose_target.orientation.y = q[1]
+        pose_target.orientation.z = q[2]
+        pose_target.orientation.w = q[3]
+        pose_target.position.x = base_position[0]
+        pose_target.position.y = base_position[1]
+        pose_target.position.z = base_position[2]
+
+        group.set_pose_target(pose_target)
+
+        group.go(wait=True)
+        #rospy.sleep(1)
+        if(REAL_ROBOT_CONNTECTED):
+            get_difference(q, base_position)
+        print("planned q")
+        print(normQ(q))
+        print(normQ(data))
+        print("planned angle")
+        print(0,i * np.pi,0)
+        print(euler_from_quaternion(data))
+        print("difference: " + str(euler_from_quaternion(data)[0] + i * np.pi))
+        # RESET
+        group.clear_pose_targets()
+        group_variable_values = group.get_current_joint_values()
+
+        if rospy.is_shutdown():
+            exit(0)
+
+    #plan1 = group.plan()
+
+    #print("============ Waiting while RVIZ displays plan1...")
+    #rospy.sleep(2)
+
+    #print("============ Visualizing plan1")
+    #display_trajectory = moveit_msgs.msg.DisplayTrajectory()
+
+    #display_trajectory_publisher = rospy.Publisher(
+    #    '/move_group/display_planned_path',
+    #    moveit_msgs.msg.DisplayTrajectory, queue_size=10)
+    #display_trajectory.trajectory_start = robot.get_current_state()
+    #display_trajectory.trajectory.append(plan1)
+    #display_trajectory_publisher.publish(display_trajectory)
+
+    #print("============ Waiting while plan1 is visualized (again)...")
+    #rospy.sleep(2)
+
+
+
+    # RESET
+
+    print("============ Joint values: ", group_variable_values)
+
+    print(robot.get_current_state())
+
+    #group_variable_values[0] = 1.0
+    #group.set_joint_value_target(group_variable_values)
+
+    #plan2 = group.plan()
+
+    print("============ Waiting while RVIZ displays plan2...")
+    rospy.sleep(5)
+
+    moveit_commander.roscpp_shutdown()

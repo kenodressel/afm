@@ -1,0 +1,1 @@
+roslaunch j2n6s300_moveit_config j2n6s300_virtual_robot_demo.launch
