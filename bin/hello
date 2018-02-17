@@ -33,6 +33,7 @@ def receive_camera_data(camera_data):
     pass
 
 def get_difference(planned_q, planned_coord):
+    global REAL_POSE
     real_position = REAL_POSE.position
     real_q = REAL_POSE.orientation
     difference_position = np.array([real_position.x, real_position.y, real_position.z]) - np.array(planned_coord)
@@ -46,7 +47,9 @@ def get_difference(planned_q, planned_coord):
     print(difference_euler)
     pass
 
-if __name__ == '__main__':
+def run_code():
+
+    global REAL_ROBOT_CONNTECTED
 
     print("============ Starting setup")
 
@@ -87,18 +90,20 @@ if __name__ == '__main__':
 
     print("============ Printing robot state")
     print(robot.get_current_state())
-    print("============")
+    
 
-    print("============ Generating plan 1")
-    # TODO move inside loop
-    pose_target = Pose()
+    print("============ Starting Test")
+    
 
     print("STARTING COMMANDS")
     base_position = [0, 0.6, 0.5]
 
-
     for i in np.linspace(0,0.5,50):
+
+        pose_target = Pose()
+
         q = quaternion_from_euler(0,i * np.pi,0)
+        print("Going to " + str(i  * 180) + " degree")
 
         pose_target.orientation.x = q[0]
         pose_target.orientation.y = q[1]
@@ -114,13 +119,7 @@ if __name__ == '__main__':
         #rospy.sleep(1)
         if(REAL_ROBOT_CONNTECTED):
             get_difference(q, base_position)
-        print("planned q")
-        print(normQ(q))
-        print(normQ(data))
-        print("planned angle")
-        print(0,i * np.pi,0)
-        print(euler_from_quaternion(data))
-        print("difference: " + str(euler_from_quaternion(data)[0] + i * np.pi))
+        
         # RESET
         group.clear_pose_targets()
         group_variable_values = group.get_current_joint_values()
@@ -150,7 +149,7 @@ if __name__ == '__main__':
 
     # RESET
 
-    print("============ Joint values: ", group_variable_values)
+    print("============ Printing joint values ")
 
     print(robot.get_current_state())
 
@@ -159,7 +158,10 @@ if __name__ == '__main__':
 
     #plan2 = group.plan()
 
-    print("============ Waiting while RVIZ displays plan2...")
-    rospy.sleep(5)
-
+    # it fails because its a know issue
+    # https://github.com/ros-planning/moveit/issues/331
     moveit_commander.roscpp_shutdown()
+    return exit(1)
+
+if __name__ == '__main__':
+    run_code()
