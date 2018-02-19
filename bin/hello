@@ -7,6 +7,8 @@ from tf.transformations import quaternion_from_euler, euler_from_quaternion
 from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose
 from geometry_msgs.msg import PolygonStamped
+from sensor_msgs.msg import CompressedImage
+import cv2
 
 import moveit_commander
 
@@ -34,8 +36,14 @@ def receive_pose_data(robot_data):
 
 def receive_camera_data(camera_data):
     global SLIDING_DETECTED, CAMERA_STATE
+
+    print("DATA FROM CAMERA")
+
     if CAMERA_STATE == 'IGNORE':
         return
+
+    np_arr = np.fromstring(camera_data.data, np.uint8)
+    image_np = cv2.imdecode(np_arr, cv2.CV_LOAD_IMAGE_COLOR)
 
     if CAMERA_STATE == 'CALIBRATE':
         # set initial data for sliding reference
@@ -43,8 +51,10 @@ def receive_camera_data(camera_data):
 
     if CAMERA_STATE == 'READY':
         # check if movement occured and set SLIDING_DETECTED
-        # print("DATA FROM CAMERA")
+
         # print(camera_data)
+        cv2.imwrite('test.jpg', image_np)
+
         if np.random.random() > 0.995:
             print("FAKING SLIDE")
             SLIDING_DETECTED = True
@@ -109,7 +119,6 @@ def rotate_arm(group, angles, position):
         # RESET
         group.clear_pose_targets()
 
-
         if rospy.is_shutdown():
             exit(0)
 
@@ -137,12 +146,20 @@ def reset_arm(group, position):
     set_camera_flag('READY')
 
 
+def subscribe_to_camera():
+    rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, receive_camera_data)
+    rospy.spin(async=True)
+
+
 def run_code():
     global REAL_ROBOT_CONNECTED
 
+    print("============ Creating node")
+
+    rospy.init_node('motion_plan', anonymous=True)
+
     print("============ Starting setup")
 
-    # init move_it commander with mysterious sys argv TODO:find out what the sys.argv is
     moveit_commander.roscpp_initialize(sys.argv)
 
     print("============ moveit_commander init successful")
@@ -157,14 +174,13 @@ def run_code():
     else:
         print("============ COULD NOT find real robot")
 
-    if '/afm/camera' in topics:
+    print([a for a in topics if "cam" in a])
+    if '/raspicam_node/image/compressed' in topics:
         print("============ FOUND camera")
-        print("============ Subscribing to /afm/camera")
-        rospy.Subscriber("/afm/camera", PolygonStamped, receive_camera_data)
+        print("============ Subscribing to /raspicam_node/image/compressed")
+        subscribe_to_camera()
     else:
         print("============ COULD NOT find camera, running blind")
-
-    rospy.init_node('motion_plan', anonymous=True)
 
     print("============ ROS node init successful")
 
