@@ -5,26 +5,30 @@ from sensor_msgs.msg import CompressedImage
 import numpy as np
 import threading
 import cv2
+import time
 
 
 class CameraThread(threading.Thread):
 
-    def __init__(self, queue):
+    def __init__(self):
         super(CameraThread, self).__init__()
-        self.queue = queue
         self.FLAG = 'IGNORE'
-        self.stop_request = threading.Event()
+        self.has_slid = False
+        self.frame_count = 0
+        self.start_time = 0
+        self.last_time = 0
         pass
 
     def run(self):
-        # the Queue here is the GLOBAL_QUEUE from the main thread
-        rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, self.receive_camera_data,
-                         callback_args=self.queue)
+        rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, self.receive_camera_data)
         rospy.spin()
 
-    def receive_camera_data(self, camera_data, main_thread_queue):
+    def receive_camera_data(self, camera_data):
+        if self.frame_count == 0:
+            self.start_time = time.time()
 
-        print("DATA FROM CAMERA. STATE " + self.FLAG)
+        self.last_time = time.time()
+        self.frame_count += 1
 
         if self.FLAG == 'IGNORE':
             return
@@ -40,25 +44,24 @@ class CameraThread(threading.Thread):
             # check if movement occured and set SLIDING_DETECTED
 
             # print(camera_data)
-            cv2.imwrite('test.jpg', image_np)
+            # cv2.imwrite('test.jpg', image_np)
 
-            main_thread_queue.put('NO_SLIDE')
-
-            if np.random.random() > 0.90:
+            if np.random.random() > 0.995:
                 print("FAKING SLIDE")
-                self.queue.put('FAKE_SLIDE')
+                self.has_slid = True
             pass
 
-        elif self.FLAG == 'SHUTDOWN' or self.stop_request:
-            rospy.signal_shutdown('END IT')
+        elif self.FLAG == 'SHUTDOWN':
             self.join()
 
         else:
             print("GOT UNEXPECTED STATUS " + str(self.FLAG))
-            rospy.signal_shutdown('END IT')
             self.join()
 
     def join(self, timeout=None):
-        self.stop_request.set()
+        print("Camera Stats")
+        print("Average FPS: " + str(self.frame_count / (self.last_time - self.start_time)))
+        print("Uptime: " + str((self.last_time - self.start_time)))
+        print("Total Frames: " + str(self.frame_count))
         rospy.signal_shutdown('END IT')
         super(CameraThread, self).join(timeout)

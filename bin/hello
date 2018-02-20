@@ -6,10 +6,6 @@ import numpy as np
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose
-from geometry_msgs.msg import PolygonStamped
-from sensor_msgs.msg import CompressedImage
-import cv2
-import threading
 from afm.camera import CameraThread
 from Queue import Queue
 import moveit_commander
@@ -30,45 +26,99 @@ REAL_ROBOT_CONNECTED = False
 SLIDING_DETECTED = False
 CAMERA_STATE = 'IGNORE'
 GLOBAL_QUEUE = Queue()
+CAMERA = None
 
 
-def receive_pose_data(robot_data):
-    global REAL_POSE
-    REAL_POSE = robot_data.pose
+class RobotHandler:
+
+    def __init__(self):
+        self.real_pose = PoseStamped().pose
+        self.camera = None
+        self.REAL_ROBOT_CONNECTED = False
+        self.extended_initialization()
 
 
-def set_camera_flag(state):
-    global CAMERA_STATE
-    CAMERA_STATE = state
+        pass
 
+    def receive_pose_data(self, robot_data):
+        self.real_pose = robot_data.pose
 
-def get_difference(planned_q, planned_coord):
-    global REAL_POSE
-    real_position = REAL_POSE.position
-    real_q = REAL_POSE.orientation
-    difference_position = np.array([real_position.x, real_position.y, real_position.z]) - np.array(planned_coord)
-    difference_orientation = np.array([real_q.x, real_q.y, real_q.z, real_q.w]) - np.array(planned_q)
-    print(difference_orientation)
-    print(difference_position)
-    # EULER
-    real_euler = euler_from_quaternion(np.array([real_q.x, real_q.y, real_q.z, real_q.w]))
-    planned_euler = euler_from_quaternion(planned_q)
-    difference_euler = np.array(real_euler - planned_euler)
-    print(difference_euler)
-    pass
+    def set_camera_flag(self, state):
+        self.camera.FLAG = state
 
+    def get_difference(self, planned_q, planned_coord):
 
-def rotate_arm(group, angles, position):
-    global GLOBAL_QUEUE, REAL_ROBOT_CONNECTED, SLIDING_DETECTED
+        real_position = self.real_pose.position
+        real_q = self.real_pose.orientation
+        difference_position = np.array([real_position.x, real_position.y, real_position.z]) - np.array(planned_coord)
+        difference_orientation = np.array([real_q.x, real_q.y, real_q.z, real_q.w]) - np.array(planned_q)
+        print(difference_orientation)
+        print(difference_position)
+        # EULER
+        real_euler = euler_from_quaternion(np.array([real_q.x, real_q.y, real_q.z, real_q.w]))
+        planned_euler = euler_from_quaternion(planned_q)
+        difference_euler = np.array(real_euler - planned_euler)
+        print(difference_euler)
 
-    print("============ Rotating arm")
+    def rotate_arm(self, angles, position):
 
-    for a in angles:
+        print("============ Rotating arm")
 
         pose_target = Pose()
 
-        q = quaternion_from_euler(*a)
+        for a in angles:
 
+            q = quaternion_from_euler(*a)
+
+            pose_target.orientation.x = q[0]
+            pose_target.orientation.y = q[1]
+            pose_target.orientation.z = q[2]
+            pose_target.orientation.w = q[3]
+            pose_target.position.x = position[0]
+            pose_target.position.y = position[1]
+            pose_target.position.z = position[2]
+
+            self.group.set_pose_target(pose_target)
+
+            plan1 = self.group.plan()
+
+            if self.camera.has_slid:
+                # if SLIDING_DETECTED:
+                print("SLIDING RECEIVED, STOPPING")
+                self.camera.has_slid = False
+                # SLIDING_DETECTED = False
+
+                self.group.execute(plan1)
+                return "SLIDING"
+
+            print("Going to " + str(max(a) * (180 / np.pi)) + " degree")
+
+            # run command async so camera can collect data
+
+            self.group.go(wait=False)
+            #
+            rospy.sleep(1)
+
+            if self.REAL_ROBOT_CONNECTED:
+                self.get_difference(q, position)
+
+            # RESET
+            self.group.clear_pose_targets()
+
+            if rospy.is_shutdown():
+                exit(0)
+
+        return "DONE"
+
+    def reset_arm(self, position=None):
+        if position is None:
+            position = [0, 0.6, 0.5]
+
+        self.set_camera_flag('IGNORE')
+
+        pose_target = Pose()
+
+        q = quaternion_from_euler(0, 0, 0)
         pose_target.orientation.x = q[0]
         pose_target.orientation.y = q[1]
         pose_target.orientation.z = q[2]
@@ -77,167 +127,91 @@ def rotate_arm(group, angles, position):
         pose_target.position.y = position[1]
         pose_target.position.z = position[2]
 
-        group.set_pose_target(pose_target)
-        print("GETTING STATUS FROM QUEUE")
-        status = GLOBAL_QUEUE.get()
-        print("GOT " + status)
-        if status == 'FAKE_SLIDE':
-            # if SLIDING_DETECTED:
-            print("SLIDING RECEIVED, STOPPING")
-            GLOBAL_QUEUE.put('SLIDE_HANDLED')
-            # SLIDING_DETECTED = False
-            return "SLIDING"
+        self.group.set_pose_target(pose_target)
 
-        print("Going to " + str(max(a) * (180 / np.pi)) + " degree")
+        self.group.go(wait=True)
 
-        group.go(wait=True)
-        # rospy.sleep(1)
+        self.set_camera_flag('READY')
 
-        if REAL_ROBOT_CONNECTED:
-            get_difference(q, position)
+    def extended_initialization(self):
+        print("============ Creating node")
 
-        # RESET
-        group.clear_pose_targets()
+        rospy.init_node('motion_plan', anonymous=True)
 
-        if rospy.is_shutdown():
-            exit(0)
+        print("============ Starting setup")
 
-    return "DONE"
+        moveit_commander.roscpp_initialize(sys.argv)
 
+        print("============ moveit_commander init successful")
 
-def reset_arm(group, position):
-    set_camera_flag('IGNORE')
+        topics = [name for (name, _) in rospy.get_published_topics()]
 
-    pose_target = Pose()
+        if '/j2n6s300_driver/out/tool_pose' in topics:
+            print("============ FOUND real robot")
+            print("============ Subscribing to /j2n6s300_driver/out/tool_pose")
+            rospy.Subscriber("/j2n6s300_driver/out/tool_pose", PoseStamped, self.receive_pose_data)
+            self.REAL_ROBOT_CONNECTED = True
+        else:
+            print("============ COULD NOT find real robot")
 
-    q = quaternion_from_euler(0, 0, 0)
-    pose_target.orientation.x = q[0]
-    pose_target.orientation.y = q[1]
-    pose_target.orientation.z = q[2]
-    pose_target.orientation.w = q[3]
-    pose_target.position.x = position[0]
-    pose_target.position.y = position[1]
-    pose_target.position.z = position[2]
+        print([a for a in topics if "cam" in a])
+        if '/raspicam_node/image/compressed' in topics:
+            print("============ FOUND camera")
+            print("============ Subscribing to /raspicam_node/image/compressed")
+            self.camera = CameraThread()
+            self.camera.start()
+            self.set_camera_flag('READY')
+        else:
+            print("============ COULD NOT find camera, running blind")
 
-    group.set_pose_target(pose_target)
+        print("============ ROS node init successful")
 
-    group.go(wait=True)
+        robot = moveit_commander.RobotCommander()
 
-    set_camera_flag('READY')
+        # scene = moveit_commander.PlanningSceneInterface()
+        self.group = moveit_commander.MoveGroupCommander("arm")
 
+        # set goal tolerance to be lower
+        self.group.set_goal_orientation_tolerance(0.0001)
 
-def run_code():
-    global REAL_ROBOT_CONNECTED, GLOBAL_QUEUE, SLIDING_DETECTED
+        print("============ objects init successful")
 
-    print("============ Creating node")
+    def run_demo_experiment(self):
 
-    rospy.init_node('motion_plan', anonymous=True)
+        print("============ Resetting arm")
 
-    print("============ Starting setup")
+        self.reset_arm()
 
-    moveit_commander.roscpp_initialize(sys.argv)
+        angles = [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, 50)]
 
-    print("============ Creating Queue for Multithreading")
+        print("============ Running test")
+        position = [0, 0.6, 0.5]
+        status = self.rotate_arm(angles, position)
 
-    print("============ moveit_commander init successful")
+        if status == 'SLIDING':
+            # reset to 0
+            self.reset_arm()
 
-    topics = [name for (name, _) in rospy.get_published_topics()]
+        if status == 'DONE':
+            # reset to 0
+            self.reset_arm()
 
-    if '/j2n6s300_driver/out/tool_pose' in topics:
-        print("============ FOUND real robot")
-        print("============ Subscribing to /j2n6s300_driver/out/tool_pose")
-        rospy.Subscriber("/j2n6s300_driver/out/tool_pose", PoseStamped, receive_pose_data)
-        REAL_ROBOT_CONNECTED = True
-    else:
-        print("============ COULD NOT find real robot")
+        self.shutdown()
 
-    c = None
+    def shutdown(self):
 
-    print([a for a in topics if "cam" in a])
-    if '/raspicam_node/image/compressed' in topics:
-        print("============ FOUND camera")
-        print("============ Subscribing to /raspicam_node/image/compressed")
-        c = CameraThread(queue=GLOBAL_QUEUE)
-        c.start()
-        c.FLAG = 'IGNORE'
-    else:
-        print("============ COULD NOT find camera, running blind")
+        print("============ WAITING ON CAMERA FOR SHUTDOWN")
+        # self.set_camera_flag('SHUTDOWN')
+        self.camera.join()
+        print("============ SHUTDOWN COMPLETED")
+        print("============ Everything finished. Now Crashing. RIP")
 
-    print("============ ROS node init successful")
-
-    robot = moveit_commander.RobotCommander()
-    # scene = moveit_commander.PlanningSceneInterface()
-    group = moveit_commander.MoveGroupCommander("arm")
-
-    print("============ objects init successful")
-
-    print("============ Reference frame: %s" % group.get_planning_frame())
-
-    print("============ Reference frame: %s" % group.get_end_effector_link())
-
-    print("============ Robot Groups:")
-    print(robot.get_group_names())
-
-    print("============ Printing robot state")
-    print(robot.get_current_state())
-
-    base_position = [0, 0.6, 0.5]
-
-    print("============ Resetting arm")
-
-    reset_arm(group, base_position)
-
-    angles = [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, 50)]
-
-    print("============ Running test")
-
-    status = rotate_arm(group, angles, base_position)
-
-    if status == 'SLIDING':
-        # reset to 0
-        reset_arm(group, base_position)
-
-    if status == 'DONE':
-        # reset to 0
-        reset_arm(group, base_position)
-
-    print("============= WAITING ON SHUTDOWN")
-    c.FLAG = 'SHUTDOWN'
-    c.join()
-    print("============= SHUTDOWN COMPLETED")
-
-    # plan1 = group.plan()
-
-    # print("============ Waiting while RVIZ displays plan1...")
-    # rospy.sleep(2)
-
-    # print("============ Visualizing plan1")
-    # display_trajectory = moveit_msgs.msg.DisplayTrajectory()
-
-    # display_trajectory_publisher = rospy.Publisher(
-    #    '/move_group/display_planned_path',
-    #    moveit_msgs.msg.DisplayTrajectory, queue_size=10)
-    # display_trajectory.trajectory_start = robot.get_current_state()
-    # display_trajectory.trajectory.append(plan1)
-    # display_trajectory_publisher.publish(display_trajectory)
-
-    # print("============ Waiting while plan1 is visualized (again)...")
-    # rospy.sleep(2)
-
-    # RESET
-
-    print("============ Everything finished. Now Crashing. RIP")
-
-    # group_variable_values[0] = 1.0
-    # group.set_joint_value_target(group_variable_values)
-
-    # plan2 = group.plan()
-
-    # it fails because its a know issue
-    # https://github.com/ros-planning/moveit/issues/331
-    moveit_commander.roscpp_shutdown()
-    return exit(1)
+        # it fails because its a know issue
+        # https://github.com/ros-planning/moveit/issues/331
+        moveit_commander.roscpp_shutdown()
+        return exit(1)
 
 
 if __name__ == '__main__':
-    run_code()
+    r = RobotHandler()
+    r.run_demo_experiment()
