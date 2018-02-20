@@ -14,19 +14,11 @@ import moveit_commander
 # import moveit_msgs.msg
 # import geometry_msgs.msg
 
+#    def norm_q(self, q):
+#        a, b, c, d = q
+#        Z = np.sqrt(a ** 2 + b ** 2 + c ** 2 + d ** 2)
+#        return np.array([a / Z, b / Z, c / Z, d / Z])
 
-def norm_q(q):
-    a, b, c, d = q
-    Z = np.sqrt(a ** 2 + b ** 2 + c ** 2 + d ** 2)
-    return np.array([a / Z, b / Z, c / Z, d / Z])
-
-
-REAL_POSE = []
-REAL_ROBOT_CONNECTED = False
-SLIDING_DETECTED = False
-CAMERA_STATE = 'IGNORE'
-GLOBAL_QUEUE = Queue()
-CAMERA = None
 
 
 class RobotHandler:
@@ -83,10 +75,8 @@ class RobotHandler:
             plan1 = self.group.plan()
 
             if self.camera.has_slid:
-                # if SLIDING_DETECTED:
                 print("SLIDING RECEIVED, STOPPING")
                 self.camera.has_slid = False
-                # SLIDING_DETECTED = False
 
                 self.group.execute(plan1)
                 return "SLIDING"
