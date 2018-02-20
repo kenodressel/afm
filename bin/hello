@@ -3,4 +3,5 @@
 from afm.robot import RobotHandler
 
 r = RobotHandler()
-r.run_demo_experiment()
+#r.run_demo_experiment()
+r.calibrate_camera()

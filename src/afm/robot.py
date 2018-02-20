@@ -79,7 +79,6 @@ class RobotHandler:
             # run command async so camera can collect data
 
             self.group.go(wait=False)
-            #
             rospy.sleep(1)
 
             if self.REAL_ROBOT_CONNECTED:
@@ -178,6 +177,14 @@ class RobotHandler:
         if status == 'DONE':
             # reset to 0
             self.reset_arm()
+
+        self.shutdown()
+
+    def calibrate_camera(self):
+        self.set_camera_flag('CALIBRATE')
+        while not rospy.is_shutdown() and self.camera.FLAG == 'CALIBRATE':
+            rospy.sleep(1)
+            pass
 
         self.shutdown()
 

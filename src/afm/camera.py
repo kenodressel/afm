@@ -6,6 +6,8 @@ import numpy as np
 import threading
 import cv2
 import time
+from sensor_msgs.msg import Image
+import cv_bridge
 
 
 class CameraThread(threading.Thread):
@@ -14,14 +16,92 @@ class CameraThread(threading.Thread):
         super(CameraThread, self).__init__()
         self.FLAG = 'IGNORE'
         self.has_slid = False
+        # stats
         self.frame_count = 0
         self.start_time = 0
         self.last_time = 0
+        # debug view
+        self.bridge = cv_bridge.CvBridge()
+        self.pub = rospy.Publisher('/afm/processed_image', Image, queue_size=5)
+        # color calibration
+        self.calibration_range = []
+        self.cube_colors = (-1, -1)
+        self.last_frame = np.array([])
         pass
 
     def run(self):
         rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, self.receive_camera_data)
         rospy.spin()
+
+    def use_color_calibration(self, image):
+
+        x, y = image.shape
+        s = 30  # size
+
+        calibration_spot = image[x / 2 - s:x / 2 + s, y / 2 - s:y / 2 + s].copy()
+        cv2.rectangle(image, (y / 2 + s, x / 2 + s), (y / 2 - s, x / 2 - s), 255, 2)
+
+        calibration_spot_f32 = image[x / 2 - s:x / 2 + s, y / 2 - s:y / 2 + s].astype(np.float32)
+        # Define criteria = ( type, max_iter = 10 , epsilon = 1.0 )
+        criteria = (cv2.cv.CV_TERMCRIT_EPS + cv2.cv.CV_TERMCRIT_ITER, 10, 1.0)
+
+        # Set flags (Just to avoid line break in the code)
+        flags = cv2.KMEANS_RANDOM_CENTERS
+
+        # Apply KMeans
+        compactness, labels, centers = cv2.kmeans(calibration_spot_f32.reshape((-1, 1)), 2, criteria, 1, flags)
+        label_img = np.array(labels).reshape((s * 2, s * 2)).astype(np.uint8) * 255
+        # image_np[x/2 - s:x/2 + s, y/2 - s:y/2 + s] = label_img
+
+        self.pub.publish(self.bridge.cv2_to_imgmsg(image, encoding='8UC1'))
+        print("Ratio: " + str(float(sum(labels)) / len(labels)))
+        if float(sum(labels)) / len(labels) > 0.7:
+            # 1 is dominant
+            points_in_cube = [p for i, p in enumerate(calibration_spot.reshape(-1)) if labels[i] == 1]
+            pass
+        elif float(sum(labels)) / len(labels) < 0.3:
+            points_in_cube = [p for i, p in enumerate(calibration_spot.reshape(-1)) if labels[i] == 0]
+            pass
+
+        else:
+            print("Could not properly find one dominant color. Please try to stay in the square!")
+            return
+
+        counts = {u: points_in_cube.count(u) for u in set(points_in_cube)}
+
+        # TODO work with counts to ignore color range outliers
+
+        print([np.min(points_in_cube), np.max(points_in_cube)])
+        self.calibration_range.append([np.min(points_in_cube), np.max(points_in_cube)])
+
+        max_frames = 100
+        print("Calibration: " + str(self.frame_count * 100 / max_frames) + "%")
+
+        if len(self.calibration_range) > max_frames:
+            # collected enough data
+
+            self.cube_colors = np.average(self.calibration_range, axis=0)
+            print(self.cube_colors)
+            self.FLAG = 'READY'
+
+    def use_edge_calibration(self, image):
+
+        edges = cv2.Canny(image, 100, 200)
+        thresh = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((10, 10), np.uint8), iterations=6)
+
+        cnts, _ = cv2.findContours(thresh.copy(), cv2.cv.CV_RETR_LIST, cv2.cv.CV_CHAIN_APPROX_SIMPLE)
+
+        blank = np.zeros_like(image)
+        sorted_cnt = sorted(cnts, key=cv2.contourArea, reverse=True)
+        cv2.drawContours(blank, cnts, 0, 255, 5)
+
+        cv2.putText(image, str(len(cnts)), (200, 200), cv2.cv.CV_FONT_HERSHEY_COMPLEX, 1, 255)
+
+        self.pub.publish(self.bridge.cv2_to_imgmsg(blank, encoding='8UC1'))
+
+        print(len(cnts))
+
+        pass
 
     def receive_camera_data(self, camera_data):
         if self.frame_count == 0:
@@ -34,11 +114,14 @@ class CameraThread(threading.Thread):
             return
 
         np_arr = np.fromstring(camera_data.data, np.uint8)
-        image_np = cv2.imdecode(np_arr, cv2.CV_LOAD_IMAGE_COLOR)
+        image_np = cv2.imdecode(np_arr, cv2.CV_LOAD_IMAGE_GRAYSCALE)
 
         if self.FLAG == 'CALIBRATE':
             # set initial data for sliding reference
-            pass
+
+            # self.use_color_calibration(image_np)
+
+            self.use_edge_calibration(image_np)
 
         elif self.FLAG == 'READY':
             # check if movement occured and set SLIDING_DETECTED
