@@ -9,7 +9,9 @@ from geometry_msgs.msg import Pose
 from geometry_msgs.msg import PolygonStamped
 from sensor_msgs.msg import CompressedImage
 import cv2
-
+import threading
+from afm.camera import CameraThread
+from Queue import Queue
 import moveit_commander
 
 
@@ -27,38 +29,12 @@ REAL_POSE = []
 REAL_ROBOT_CONNECTED = False
 SLIDING_DETECTED = False
 CAMERA_STATE = 'IGNORE'
+GLOBAL_QUEUE = Queue()
 
 
 def receive_pose_data(robot_data):
     global REAL_POSE
     REAL_POSE = robot_data.pose
-
-
-def receive_camera_data(camera_data):
-    global SLIDING_DETECTED, CAMERA_STATE
-
-    print("DATA FROM CAMERA")
-
-    if CAMERA_STATE == 'IGNORE':
-        return
-
-    np_arr = np.fromstring(camera_data.data, np.uint8)
-    image_np = cv2.imdecode(np_arr, cv2.CV_LOAD_IMAGE_COLOR)
-
-    if CAMERA_STATE == 'CALIBRATE':
-        # set initial data for sliding reference
-        pass
-
-    if CAMERA_STATE == 'READY':
-        # check if movement occured and set SLIDING_DETECTED
-
-        # print(camera_data)
-        cv2.imwrite('test.jpg', image_np)
-
-        if np.random.random() > 0.995:
-            print("FAKING SLIDE")
-            SLIDING_DETECTED = True
-        pass
 
 
 def set_camera_flag(state):
@@ -83,7 +59,7 @@ def get_difference(planned_q, planned_coord):
 
 
 def rotate_arm(group, angles, position):
-    global SLIDING_DETECTED, REAL_ROBOT_CONNECTED
+    global GLOBAL_QUEUE, REAL_ROBOT_CONNECTED, SLIDING_DETECTED
 
     print("============ Rotating arm")
 
@@ -102,10 +78,14 @@ def rotate_arm(group, angles, position):
         pose_target.position.z = position[2]
 
         group.set_pose_target(pose_target)
-
-        if SLIDING_DETECTED:
+        print("GETTING STATUS FROM QUEUE")
+        status = GLOBAL_QUEUE.get()
+        print("GOT " + status)
+        if status == 'FAKE_SLIDE':
+            # if SLIDING_DETECTED:
             print("SLIDING RECEIVED, STOPPING")
-            SLIDING_DETECTED = False
+            GLOBAL_QUEUE.put('SLIDE_HANDLED')
+            # SLIDING_DETECTED = False
             return "SLIDING"
 
         print("Going to " + str(max(a) * (180 / np.pi)) + " degree")
@@ -146,13 +126,8 @@ def reset_arm(group, position):
     set_camera_flag('READY')
 
 
-def subscribe_to_camera():
-    rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, receive_camera_data)
-    rospy.spin(async=True)
-
-
 def run_code():
-    global REAL_ROBOT_CONNECTED
+    global REAL_ROBOT_CONNECTED, GLOBAL_QUEUE, SLIDING_DETECTED
 
     print("============ Creating node")
 
@@ -161,6 +136,8 @@ def run_code():
     print("============ Starting setup")
 
     moveit_commander.roscpp_initialize(sys.argv)
+
+    print("============ Creating Queue for Multithreading")
 
     print("============ moveit_commander init successful")
 
@@ -174,11 +151,15 @@ def run_code():
     else:
         print("============ COULD NOT find real robot")
 
+    c = None
+
     print([a for a in topics if "cam" in a])
     if '/raspicam_node/image/compressed' in topics:
         print("============ FOUND camera")
         print("============ Subscribing to /raspicam_node/image/compressed")
-        subscribe_to_camera()
+        c = CameraThread(queue=GLOBAL_QUEUE)
+        c.start()
+        c.FLAG = 'IGNORE'
     else:
         print("============ COULD NOT find camera, running blind")
 
@@ -219,6 +200,11 @@ def run_code():
     if status == 'DONE':
         # reset to 0
         reset_arm(group, base_position)
+
+    print("============= WAITING ON SHUTDOWN")
+    c.FLAG = 'SHUTDOWN'
+    c.join()
+    print("============= SHUTDOWN COMPLETED")
 
     # plan1 = group.plan()
 
