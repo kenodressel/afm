@@ -32,6 +32,8 @@ class RobotHandler:
         self.camera.FLAG = state
 
     def get_difference(self, planned_q, planned_coord):
+        # temp
+        return
 
         real_position = self.real_pose.position
         real_q = self.real_pose.orientation
@@ -65,13 +67,12 @@ class RobotHandler:
 
             self.group.set_pose_target(pose_target)
 
-            plan1 = self.group.plan()
+            # plan1 = self.group.plan()
 
             if self.camera.has_slid:
                 print("SLIDING RECEIVED, STOPPING")
-                self.camera.has_slid = False
-
-                self.group.execute(plan1)
+                # self.camera.has_slid = False
+                # self.group.execute(plan1)
                 return "SLIDING"
 
             print("Going to " + str(max(a) * (180 / np.pi)) + " degree")
