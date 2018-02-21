@@ -27,6 +27,8 @@ class CameraThread(threading.Thread):
         self.calibration_range = []
         self.cube_colors = (-1, -1)
         self.last_frame = np.array([])
+
+        self.box_positions = []
         pass
 
     def run(self):
@@ -87,19 +89,43 @@ class CameraThread(threading.Thread):
     def use_edge_calibration(self, image):
 
         edges = cv2.Canny(image, 100, 200)
-        thresh = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((10, 10), np.uint8), iterations=6)
 
-        cnts, _ = cv2.findContours(thresh.copy(), cv2.cv.CV_RETR_LIST, cv2.cv.CV_CHAIN_APPROX_SIMPLE)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        dilated = cv2.dilate(edges, kernel, iterations=2)
+
+        # thresh = cv2.morphologyEx(dilated, cv2.MORPH_CLOSE, kernel, iterations=8)
+
+        thresh = dilated
+
+        cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.cv.CV_CHAIN_APPROX_SIMPLE)
 
         blank = np.zeros_like(image)
-        sorted_cnt = sorted(cnts, key=cv2.contourArea, reverse=True)
-        cv2.drawContours(blank, cnts, 0, 255, 5)
 
-        cv2.putText(image, str(len(cnts)), (200, 200), cv2.cv.CV_FONT_HERSHEY_COMPLEX, 1, 255)
+        c = cnts[0]
 
-        self.pub.publish(self.bridge.cv2_to_imgmsg(blank, encoding='8UC1'))
+        if len(cnts) > 0:
+            sorted_cnt = sorted(cnts, key=cv2.contourArea, reverse=True)
+            c = sorted_cnt[0]
 
-        print(len(cnts))
+        rect = cv2.minAreaRect(c)
+
+        # cv2.drawContours(blank, c, -1, 255, 5)
+
+        box = cv2.cv.BoxPoints(rect)
+        box = np.int0(box)
+        print(box)
+
+        cv2.drawContours(image, [box], -1, 255, 5)
+
+        # todo look into convex hulls
+
+        cX, cY = np.int0(np.average(box, axis=0))
+        print(cX, cY)
+
+        # draw the contour and center of the shape on the image
+        cv2.circle(image, (cX, cY), 6, 255, -1)
+
+        self.pub.publish(self.bridge.cv2_to_imgmsg(image, encoding='8UC1'))
 
         pass
 
