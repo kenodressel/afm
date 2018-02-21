@@ -27,13 +27,23 @@ class CameraThread(threading.Thread):
         self.calibration_range = []
         self.cube_colors = (-1, -1)
         self.last_frame = np.array([])
-
-        self.box_positions = []
+        # edge calibration
+        self.last_box_positions = []
+        self.calibration_boxes = []
+        self.expected_variance = []
+        self.reference_box = []
         pass
 
     def run(self):
         rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, self.receive_camera_data)
         rospy.spin()
+
+    def start_calibration(self):
+        # let the camera warm up
+        rospy.sleep(1)
+        print('Starting Camera Calibration')
+        # set flag
+        self.FLAG = 'CALIBRATE'
 
     def use_color_calibration(self, image):
 
@@ -86,9 +96,13 @@ class CameraThread(threading.Thread):
             print(self.cube_colors)
             self.FLAG = 'READY'
 
-    def use_edge_calibration(self, image):
+    def get_box_from_image(self, image):
 
-        edges = cv2.Canny(image, 100, 200)
+        edges = cv2.Canny(image, 50, 100)
+
+        # edges = cv2.morphologyEx(edges, cv2.MORPH_OPEN, np.ones((3, 3)), iterations=1)
+
+        # self.pub.publish(self.bridge.cv2_to_imgmsg(edges, encoding='8UC1'))
 
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
         dilated = cv2.dilate(edges, kernel, iterations=2)
@@ -103,7 +117,7 @@ class CameraThread(threading.Thread):
 
         c = cnts[0]
 
-        if len(cnts) > 0:
+        if len(cnts) > 1:
             sorted_cnt = sorted(cnts, key=cv2.contourArea, reverse=True)
             c = sorted_cnt[0]
 
@@ -111,23 +125,88 @@ class CameraThread(threading.Thread):
 
         # cv2.drawContours(blank, c, -1, 255, 5)
 
-        box = cv2.cv.BoxPoints(rect)
-        box = np.int0(box)
-        print(box)
+        return np.array(cv2.cv.BoxPoints(rect), np.uint)
+
+    def get_distances_between_boxes(self, box1, box2):
+
+        # not perfect but since we can expect multiple corners to move a significant amount
+        # we dont need to reliably match all points. potentially multiple points map to one but
+        # then assume 0 for unmapped point. We really want to avoid false positives
+
+        distances = [0, 0, 0, 0]
+
+        for p2 in box2:
+            temp_distances = [np.linalg.norm(p2 - p1) for p1 in box1]
+            closest = np.argmin(temp_distances)
+            distances[closest] = temp_distances[closest]
+
+        return np.array(distances)
+
+    def calibrate_edges(self, image):
+
+        box = self.get_box_from_image(image)
+
+        if len(box) > 0:
+            if len(self.calibration_boxes) == 0:
+                self.calibration_boxes.append(box)
+            else:
+                sorted_box = [None, None, None, None]
+                for p in box:
+                    closest = np.argmin([np.linalg.norm(p - p_o) for p_o in self.calibration_boxes[0]])
+                    sorted_box[closest] = p
+                self.calibration_boxes.append(sorted_box)
+
+            if len(self.calibration_boxes) > 20:
+                # min_box = np.min(self.calibration_boxes, axis=0)
+                max_box = np.max(self.calibration_boxes, axis=0)
+
+                self.reference_box = np.average(self.calibration_boxes, axis=0)
+                self.expected_variance = self.get_distances_between_boxes(self.reference_box, max_box)
+
+                print(self.reference_box)
+                print(self.expected_variance)
+
+                return True
+        else:
+            print("No Cube detected. Please put the cube on the surface.")
+
+        return False
+
+    def has_cube_moved(self, image):
+
+        box = self.get_box_from_image(image)
+
+        corners_reporting_movement = 0
+
+        distances = self.get_distances_between_boxes(self.reference_box, box)
+        normed_distance = distances - self.expected_variance
+
+        for d in normed_distance:
+            if d > 10:
+                corners_reporting_movement += 1
+
+        self.last_box_positions.append(box)
+
+        if len(self.last_box_positions) > 5:
+            self.last_box_positions.pop(0)
 
         cv2.drawContours(image, [box], -1, 255, 5)
 
-        # todo look into convex hulls
-
         cX, cY = np.int0(np.average(box, axis=0))
-        print(cX, cY)
+        # print(cX, cY)
 
         # draw the contour and center of the shape on the image
         cv2.circle(image, (cX, cY), 6, 255, -1)
 
         self.pub.publish(self.bridge.cv2_to_imgmsg(image, encoding='8UC1'))
 
-        pass
+        if corners_reporting_movement > 2:
+            print(np.array(normed_distance, np.uint), corners_reporting_movement)
+            return True
+        else:
+            box = np.array(np.average(self.last_box_positions, axis=0), np.uint)
+
+        return False
 
     def receive_camera_data(self, camera_data):
         if self.frame_count == 0:
@@ -147,7 +226,10 @@ class CameraThread(threading.Thread):
 
             # self.use_color_calibration(image_np)
 
-            self.use_edge_calibration(image_np)
+            if self.calibrate_edges(image_np):
+                self.FLAG = 'READY'
+                print('Finished Camera Calibration')
+            pass
 
         elif self.FLAG == 'READY':
             # check if movement occured and set SLIDING_DETECTED
@@ -155,8 +237,8 @@ class CameraThread(threading.Thread):
             # print(camera_data)
             # cv2.imwrite('test.jpg', image_np)
 
-            if np.random.random() > 0.995:
-                print("FAKING SLIDE")
+            if self.has_cube_moved(image_np):
+                print("DETECTED SLIDE")
                 self.has_slid = True
             pass
 

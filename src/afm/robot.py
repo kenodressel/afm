@@ -96,8 +96,6 @@ class RobotHandler:
         if position is None:
             position = [0, 0.6, 0.5]
 
-        self.set_camera_flag('IGNORE')
-
         pose_target = Pose()
 
         q = quaternion_from_euler(0, 0, 0)
@@ -112,8 +110,6 @@ class RobotHandler:
         self.group.set_pose_target(pose_target)
 
         self.group.go(wait=True)
-
-        self.set_camera_flag('READY')
 
     def extended_initialization(self):
         print("============ Creating node")
@@ -142,7 +138,7 @@ class RobotHandler:
             print("============ Subscribing to /raspicam_node/image/compressed")
             self.camera = CameraThread()
             self.camera.start()
-            self.set_camera_flag('READY')
+            self.set_camera_flag('IGNORE')
         else:
             print("============ COULD NOT find camera, running blind")
 
@@ -181,12 +177,12 @@ class RobotHandler:
         self.shutdown()
 
     def calibrate_camera(self):
-        self.set_camera_flag('CALIBRATE')
+
+        self.camera.start_calibration()
+
         while not rospy.is_shutdown() and self.camera.FLAG == 'CALIBRATE':
             rospy.sleep(1)
             pass
-
-        self.shutdown()
 
     def shutdown(self):
 
