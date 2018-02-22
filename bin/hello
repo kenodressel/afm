@@ -3,6 +3,11 @@
 from afm.robot import RobotHandler
 
 r = RobotHandler()
-r.calibrate_camera()
-r.run_demo_experiment()
+# r.connect_to_camera()
+# r.connect_to_real_robot()
+# r.calibrate_camera()
+# r.run_demo_experiment()
+# r.reset_arm()
+r.run_calibration()
+r.shutdown()
 # r.spin()

@@ -6,6 +6,7 @@ from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose
 from afm.camera import CameraThread
 import moveit_commander
+import pickle
 
 
 # import moveit_msgs.msg
@@ -21,10 +22,21 @@ class RobotHandler:
 
     def __init__(self):
 
+        print("============ started robot init")
+
         self.camera = None
         self.REAL_ROBOT_CONNECTED = False
         self.real_pose = PoseStamped().pose
-        self.extended_initialization()
+
+        # currently required minimum initialization
+        rospy.init_node('afm', anonymous=True)
+        moveit_commander.roscpp_initialize(sys.argv)
+        self.robot = moveit_commander.RobotCommander()
+        self.group = moveit_commander.MoveGroupCommander("arm")
+        self.group.set_goal_orientation_tolerance(0.0001)
+
+        print("============ robot init successful")
+
         pass
 
     def spin(self):
@@ -106,17 +118,21 @@ class RobotHandler:
 
         return "DONE"
 
-    def reset_arm(self, position=None):
-        if position is None:
-            position = [0, 0.6, 0.5]
+    def reset_arm(self):
+
+        q = quaternion_from_euler(0, 0, 0)
+        position = [0, 0.6, 0.5]
+
+        self.set_arm_position(position, q)
+
+    def set_arm_position(self, position, orientation):
 
         pose_target = Pose()
 
-        q = quaternion_from_euler(0, 0, 0)
-        pose_target.orientation.x = q[0]
-        pose_target.orientation.y = q[1]
-        pose_target.orientation.z = q[2]
-        pose_target.orientation.w = q[3]
+        pose_target.orientation.x = orientation[0]
+        pose_target.orientation.y = orientation[1]
+        pose_target.orientation.z = orientation[2]
+        pose_target.orientation.w = orientation[3]
         pose_target.position.x = position[0]
         pose_target.position.y = position[1]
         pose_target.position.z = position[2]
@@ -125,16 +141,71 @@ class RobotHandler:
 
         self.group.go(wait=True)
 
-    def extended_initialization(self):
-        print("============ Creating node")
+        return True
 
-        rospy.init_node('afm', anonymous=True)
+    def run_calibration(self):
 
-        print("============ Starting setup")
+        positions = [[0, 0.6, 0.5], [0, 0.6, 0.5], [0, 0.4, 0.7], [0, 0.4, 0.7]]
 
-        moveit_commander.roscpp_initialize(sys.argv)
+        all_angles = [
+            [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, 5)],
+            [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, 5)],
+            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)],
+            [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)]
+        ]
+        for i in range(4):
 
-        print("============ moveit_commander init successful")
+            position = positions[i]
+            angles = all_angles[i]
+
+            for a in angles:
+
+                q = quaternion_from_euler(*a)
+
+                print("Going to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
+                self.set_arm_position(position, q)
+
+                rospy.sleep(1)
+
+                if self.REAL_ROBOT_CONNECTED:
+                    self.get_difference(q, position)
+
+                # RESET
+                self.group.clear_pose_targets()
+
+                if rospy.is_shutdown():
+                    exit(0)
+
+            for a in reversed(angles):
+                q = quaternion_from_euler(*a)
+
+                print("Resetting to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
+                self.set_arm_position(position, q)
+
+                rospy.sleep(1)
+
+            # go to position x
+
+            # record position from robot
+
+            # record joint positions
+
+            # do it in 5 degree steps for + / - 90 degrees in both directions
+
+    def connect_to_camera(self):
+
+        topics = [name for (name, _) in rospy.get_published_topics()]
+
+        if '/raspicam_node/image/compressed' in topics:
+            print("============ FOUND camera")
+            print("============ Subscribing to /raspicam_node/image/compressed")
+            self.camera = CameraThread()
+            self.camera.start()
+            self.set_camera_flag('IGNORE')
+        else:
+            print("============ COULD NOT find camera, running blind")
+
+    def connect_to_real_robot(self):
 
         topics = [name for (name, _) in rospy.get_published_topics()]
 
@@ -145,28 +216,6 @@ class RobotHandler:
             self.REAL_ROBOT_CONNECTED = True
         else:
             print("============ COULD NOT find real robot")
-
-        print([a for a in topics if "cam" in a])
-        if '/raspicam_node/image/compressed' in topics:
-            print("============ FOUND camera")
-            print("============ Subscribing to /raspicam_node/image/compressed")
-            self.camera = CameraThread()
-            self.camera.start()
-            self.set_camera_flag('IGNORE')
-        else:
-            print("============ COULD NOT find camera, running blind")
-
-        print("============ ROS node init successful")
-
-        robot = moveit_commander.RobotCommander()
-
-        # scene = moveit_commander.PlanningSceneInterface()
-        self.group = moveit_commander.MoveGroupCommander("arm")
-
-        # set goal tolerance to be lower
-        self.group.set_goal_orientation_tolerance(0.0001)
-
-        print("============ objects init successful")
 
     def run_demo_experiment(self):
 
