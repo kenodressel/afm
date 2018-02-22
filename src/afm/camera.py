@@ -196,12 +196,19 @@ class CameraThread(threading.Thread):
         # print(cX, cY)
 
         # draw the contour and center of the shape on the image
-        cv2.circle(image, (cX, cY), 6, 255, -1)
+
+        try:
+            cv2.circle(image, (cX, cY), 6, 255, -1)
+        except OverflowError:
+            pass
+            # TODO do something about this
+            # print(cX, cY)
+            # print(box)
 
         self.pub.publish(self.bridge.cv2_to_imgmsg(image, encoding='8UC1'))
 
         if corners_reporting_movement > 2:
-            print(np.array(normed_distance, np.uint), corners_reporting_movement)
+            # print(np.array(normed_distance, np.uint), corners_reporting_movement)
             return True
         else:
             box = np.array(np.average(self.last_box_positions, axis=0), np.uint)
@@ -238,7 +245,7 @@ class CameraThread(threading.Thread):
             # cv2.imwrite('test.jpg', image_np)
 
             if self.has_cube_moved(image_np):
-                print("DETECTED SLIDE")
+                # print("DETECTED SLIDE")
                 self.has_slid = True
             pass
 

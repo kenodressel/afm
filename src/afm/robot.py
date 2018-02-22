@@ -16,6 +16,7 @@ def norm_q(q):
     Z = np.sqrt(a ** 2 + b ** 2 + c ** 2 + d ** 2)
     return np.array([a / Z, b / Z, c / Z, d / Z])
 
+
 class RobotHandler:
 
     def __init__(self):
@@ -35,11 +36,19 @@ class RobotHandler:
     def set_camera_flag(self, state):
         self.camera.FLAG = state
 
+    def get_current_euler(self):
+        real_q = self.real_pose.orientation
+        real_euler = euler_from_quaternion(np.array([real_q.x, real_q.y, real_q.z, real_q.w]))
+
+        # do some remapping
+        real_euler = np.array([real_euler[1], real_euler[0] * -1, real_euler[2] + 1.57])
+        return real_euler
+
     def get_difference(self, planned_q, planned_coord):
         # temp
         # print(planned_coord, planned_q)
 
-        real_q = self.real_pose.orientation
+        real_euler = self.get_current_euler()
         real_position = self.real_pose.position
 
         difference_position = np.array([real_position.x, real_position.y, real_position.z]) - np.array(planned_coord)
@@ -47,11 +56,6 @@ class RobotHandler:
         print(difference_position)
 
         # EULER
-        real_euler = euler_from_quaternion(np.array([real_q.x, real_q.y, real_q.z, real_q.w]))
-
-        # do some remapping
-        real_euler = np.array([real_euler[1], real_euler[0] * -1, real_euler[2] + 1.57])
-
         planned_euler = np.array(euler_from_quaternion(planned_q))
         difference_euler = np.array(real_euler - planned_euler)
         print(difference_euler)
@@ -178,6 +182,7 @@ class RobotHandler:
 
         if status == 'SLIDING':
             # reset to 0
+            print(self.get_current_euler())
             self.reset_arm()
 
         if status == 'DONE':
