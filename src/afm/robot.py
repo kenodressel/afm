@@ -11,19 +11,23 @@ import moveit_commander
 # import moveit_msgs.msg
 # import geometry_msgs.msg
 
-#    def norm_q(self, q):
-#        a, b, c, d = q
-#        Z = np.sqrt(a ** 2 + b ** 2 + c ** 2 + d ** 2)
-#        return np.array([a / Z, b / Z, c / Z, d / Z])
+def norm_q(q):
+    a, b, c, d = q
+    Z = np.sqrt(a ** 2 + b ** 2 + c ** 2 + d ** 2)
+    return np.array([a / Z, b / Z, c / Z, d / Z])
 
 class RobotHandler:
 
     def __init__(self):
-        self.real_pose = PoseStamped().pose
+
         self.camera = None
         self.REAL_ROBOT_CONNECTED = False
+        self.real_pose = PoseStamped().pose
         self.extended_initialization()
         pass
+
+    def spin(self):
+        rospy.spin()
 
     def receive_pose_data(self, robot_data):
         self.real_pose = robot_data.pose
@@ -33,17 +37,22 @@ class RobotHandler:
 
     def get_difference(self, planned_q, planned_coord):
         # temp
-        return
+        # print(planned_coord, planned_q)
 
-        real_position = self.real_pose.position
         real_q = self.real_pose.orientation
+        real_position = self.real_pose.position
+
         difference_position = np.array([real_position.x, real_position.y, real_position.z]) - np.array(planned_coord)
-        difference_orientation = np.array([real_q.x, real_q.y, real_q.z, real_q.w]) - np.array(planned_q)
-        print(difference_orientation)
+
         print(difference_position)
+
         # EULER
         real_euler = euler_from_quaternion(np.array([real_q.x, real_q.y, real_q.z, real_q.w]))
-        planned_euler = euler_from_quaternion(planned_q)
+
+        # do some remapping
+        real_euler = np.array([real_euler[1], real_euler[0] * -1, real_euler[2] + 1.57])
+
+        planned_euler = np.array(euler_from_quaternion(planned_q))
         difference_euler = np.array(real_euler - planned_euler)
         print(difference_euler)
 
@@ -69,7 +78,7 @@ class RobotHandler:
 
             # plan1 = self.group.plan()
 
-            if self.camera.has_slid:
+            if self.camera is not None and self.camera.has_slid:
                 print("SLIDING RECEIVED, STOPPING")
                 # self.camera.has_slid = False
                 # self.group.execute(plan1)
@@ -178,6 +187,9 @@ class RobotHandler:
         self.shutdown()
 
     def calibrate_camera(self):
+        if self.camera is None:
+            print("Skipping Calibration, no camera detected")
+            return
 
         self.camera.start_calibration()
 
@@ -189,7 +201,8 @@ class RobotHandler:
 
         print("============ WAITING ON CAMERA FOR SHUTDOWN")
         # self.set_camera_flag('SHUTDOWN')
-        self.camera.join()
+        if self.camera is not None:
+            self.camera.join()
         print("============ SHUTDOWN COMPLETED")
         print("============ Everything finished. Now Crashing. RIP")
 
