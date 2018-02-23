@@ -7,7 +7,7 @@ from geometry_msgs.msg import Pose
 from afm.camera import CameraThread
 import moveit_commander
 import pickle
-
+import os
 
 # import moveit_msgs.msg
 # import geometry_msgs.msg
@@ -26,7 +26,7 @@ class RobotHandler:
 
         self.camera = None
         self.REAL_ROBOT_CONNECTED = False
-        self.real_pose = PoseStamped().pose
+        self.robot_data = PoseStamped()
 
         # currently required minimum initialization
         rospy.init_node('afm', anonymous=True)
@@ -43,13 +43,14 @@ class RobotHandler:
         rospy.spin()
 
     def receive_pose_data(self, robot_data):
-        self.real_pose = robot_data.pose
+        print(robot_data.pose)
+        self.robot_data = robot_data
 
     def set_camera_flag(self, state):
         self.camera.FLAG = state
 
     def get_current_euler(self):
-        real_q = self.real_pose.orientation
+        real_q = self.robot_data.pose.orientation
         real_euler = euler_from_quaternion(np.array([real_q.x, real_q.y, real_q.z, real_q.w]))
 
         # do some remapping
@@ -61,7 +62,7 @@ class RobotHandler:
         # print(planned_coord, planned_q)
 
         real_euler = self.get_current_euler()
-        real_position = self.real_pose.position
+        real_position = self.robot_data.pose.position
 
         difference_position = np.array([real_position.x, real_position.y, real_position.z]) - np.array(planned_coord)
 
@@ -71,6 +72,9 @@ class RobotHandler:
         planned_euler = np.array(euler_from_quaternion(planned_q))
         difference_euler = np.array(real_euler - planned_euler)
         print(difference_euler)
+        # collect difference in qaternion as well
+
+        return difference_position, difference_euler  # , difference_quanternion
 
     def rotate_arm(self, angles, position):
 
@@ -141,9 +145,25 @@ class RobotHandler:
 
         self.group.go(wait=True)
 
-        return True
+        self.group.clear_pose_targets()
+
+        return pose_target
+
+    def save_poses(self):
+
+        pass
+
+    def run_debug_code(self):
+
+        test_pose_1 = Pose()
+        test_pose_1.orientation.x = 0.01
+        test_pose_2 = Pose()
+        test_pose_2.orientation.x = 0.01
+        print(test_pose_1 == test_pose_2)
 
     def run_calibration(self):
+        dirpath = '/home/keno/data/' + str(rospy.get_time())
+        os.mkdir(dirpath)
 
         positions = [[0, 0.6, 0.5], [0, 0.6, 0.5], [0, 0.4, 0.7], [0, 0.4, 0.7]]
 
@@ -153,6 +173,7 @@ class RobotHandler:
             [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)],
             [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)]
         ]
+
         for i in range(4):
 
             position = positions[i]
@@ -160,23 +181,45 @@ class RobotHandler:
 
             for a in angles:
 
+                collected_data = {
+                    'angle': a,
+                    'robot_data': [PoseStamped()],
+                    'planned_pose': None,
+                    'time': [rospy.get_time(), rospy.get_time()]
+                }
+
                 q = quaternion_from_euler(*a)
 
                 print("Going to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
-                self.set_arm_position(position, q)
+                collected_data['planned_pose'] = self.set_arm_position(position, q)
 
+                # wait for systems to catch up
                 rospy.sleep(1)
 
-                if self.REAL_ROBOT_CONNECTED:
-                    self.get_difference(q, position)
+                # collect data
+                print('Collecting Data')
+                collected_data['time'][0] = rospy.get_time()
+                failed_rounds = 0
+                while not rospy.is_shutdown() and len(collected_data['robot_data']) < 51:
+                    rospy.sleep(0.05)
+                    if collected_data['robot_data'][-1] != self.robot_data or failed_rounds > 20:
+                        collected_data['robot_data'].append(self.robot_data)
+                    else:
+                        failed_rounds += 1
 
-                # RESET
-                self.group.clear_pose_targets()
+                # if self.REAL_ROBOT_CONNECTED:
+                #     self.get_difference(q, position)
+
+                with open(dirpath + '/' + str(a) + '.pickle', 'wb') as f:
+                    collected_data['robot_data'] = collected_data['robot_data'][1:]
+                    collected_data['time'][1] = rospy.get_time()
+                    pickle.dump(collected_data, f)
+                    print('Finished Data Collection')
 
                 if rospy.is_shutdown():
                     exit(0)
 
-            for a in reversed(angles):
+            for a in reversed(angles[:-1]):
                 q = quaternion_from_euler(*a)
 
                 print("Resetting to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
