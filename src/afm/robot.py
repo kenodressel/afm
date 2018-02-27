@@ -1,13 +1,19 @@
 import sys
+
+import actionlib
 import rospy
 import numpy as np
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose
+from sensor_msgs.msg import JointState
+from kinova_msgs.msg import JointAngles, ArmJointAnglesGoal, ArmJointAnglesAction
 from afm.camera import CameraThread
 import moveit_commander
 import pickle
 import os
+from afm.data import RobotData
+
 
 # import moveit_msgs.msg
 # import geometry_msgs.msg
@@ -26,7 +32,10 @@ class RobotHandler:
 
         self.camera = None
         self.REAL_ROBOT_CONNECTED = False
-        self.robot_data = PoseStamped()
+        self.robot_pose = PoseStamped()
+        self.robot_joint_state = JointState()
+        self.robot_joint_angles = JointAngles()
+        self.robot_joint_command = JointAngles()
 
         # currently required minimum initialization
         rospy.init_node('afm', anonymous=True)
@@ -42,15 +51,23 @@ class RobotHandler:
     def spin(self):
         rospy.spin()
 
-    def receive_pose_data(self, robot_data):
-        print(robot_data.pose)
-        self.robot_data = robot_data
+    def receive_pose_data(self, robot_pose):
+        self.robot_pose = robot_pose
+
+    def receive_joint_state(self, robot_joint_state):
+        self.robot_joint_state = robot_joint_state
+
+    def receive_joint_command(self, robot_joint_angles):
+        self.robot_joint_angles = robot_joint_angles
+
+    def receive_joint_angles(self, robot_joint_command):
+        self.robot_joint_command = robot_joint_command
 
     def set_camera_flag(self, state):
         self.camera.FLAG = state
 
     def get_current_euler(self):
-        real_q = self.robot_data.pose.orientation
+        real_q = self.robot_pose.pose.orientation
         real_euler = euler_from_quaternion(np.array([real_q.x, real_q.y, real_q.z, real_q.w]))
 
         # do some remapping
@@ -62,7 +79,7 @@ class RobotHandler:
         # print(planned_coord, planned_q)
 
         real_euler = self.get_current_euler()
-        real_position = self.robot_data.pose.position
+        real_position = self.robot_pose.pose.position
 
         difference_position = np.array([real_position.x, real_position.y, real_position.z]) - np.array(planned_coord)
 
@@ -149,10 +166,6 @@ class RobotHandler:
 
         return pose_target
 
-    def save_poses(self):
-
-        pass
-
     def run_debug_code(self):
 
         test_pose_1 = Pose()
@@ -161,17 +174,92 @@ class RobotHandler:
         test_pose_2.orientation.x = 0.01
         print(test_pose_1 == test_pose_2)
 
+    def rerun_calibration(self):
+        rd = RobotData()
+
+        dirpath = rd.base_path + '_rerun'
+        os.mkdir(dirpath)
+
+        print("FOUND " + str(len(rd.files)))
+        for i in range(len(rd.files)):
+            joint_positions = rd.get_average_joint_position(i)
+            print(joint_positions)
+            # rospy.sleep(1)
+            self.joint_angle_client(joint_positions)
+            # todo add proper tracking at some point
+            # self.collect_pose_data(dirpath)
+
+    def joint_angle_client(self, angle_set):
+        """Send a joint angle goal to the action server."""
+        action_address = '/j2n6s300_driver/joints_action/joint_angles'
+        client = actionlib.SimpleActionClient(action_address,
+                                              ArmJointAnglesAction)
+        client.wait_for_server()
+
+        goal = ArmJointAnglesGoal()
+
+        goal.angles.joint1 = angle_set['joint1']
+        goal.angles.joint2 = angle_set['joint2']
+        goal.angles.joint3 = angle_set['joint3']
+        goal.angles.joint4 = angle_set['joint4']
+        goal.angles.joint5 = angle_set['joint5']
+        goal.angles.joint6 = angle_set['joint6']
+        goal.angles.joint7 = angle_set['joint7']
+
+        client.send_goal(goal)
+        if client.wait_for_result(rospy.Duration(20)):
+            rospy.sleep(3.0)
+            return client.get_result()
+        else:
+            print('        the joint angle action timed-out')
+            client.cancel_all_goals()
+
+        return None
+
+    def collect_pose_data(self, dirpath):
+        a = ()
+        collected_data = {
+            'angle': a,
+            'robot_pose': [PoseStamped()],
+            'robot_joint_state': [],
+            'robot_joint_angles': [],
+            'robot_joint_command': [],
+            'planned_pose': None,
+            'time': [rospy.get_time(), rospy.get_time()]
+        }
+
+        print('Collecting Data')
+        collected_data['time'][0] = rospy.get_time()
+        while not rospy.is_shutdown() and len(collected_data['robot_pose']) < 51:
+            rospy.sleep(0.05)
+            if collected_data['robot_pose'][-1].header.seq != self.robot_pose.header.seq:
+                collected_data['robot_pose'].append(self.robot_pose)
+                collected_data['robot_joint_state'].append(self.robot_joint_state)
+                collected_data['robot_joint_angles'].append(self.robot_joint_angles)
+                collected_data['robot_joint_command'].append(self.robot_joint_command)
+
+        with open(dirpath + '/' + str(a) + '.pickle', 'wb') as f:
+            print("Got " + str(len(collected_data['robot_pose'])))
+            # remove initial (empty) state
+            collected_data['robot_pose'] = collected_data['robot_pose'][1:]
+            # get finished time
+            collected_data['time'][1] = rospy.get_time()
+            # save data
+            pickle.dump(collected_data, f)
+            print('Finished Data Collection')
+
+
     def run_calibration(self):
         dirpath = '/home/keno/data/' + str(rospy.get_time())
         os.mkdir(dirpath)
 
-        positions = [[0, 0.6, 0.5], [0, 0.6, 0.5], [0, 0.4, 0.7], [0, 0.4, 0.7]]
+        positions = [[0, 0.6, 0.5], [0, 0.6, 0.5], [0, 0.3, 0.7], [0, 0.5, 0.7]]
 
         all_angles = [
-            [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, 5)],
-            [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, 5)],
-            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)],
-            [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)]
+            [(0, i * np.pi, 0) for i in np.linspace(0, 0.25, 90)],
+            [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, 90)],
+            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 90)],
+            [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 90)]
         ]
 
         for i in range(4):
@@ -183,7 +271,10 @@ class RobotHandler:
 
                 collected_data = {
                     'angle': a,
-                    'robot_data': [PoseStamped()],
+                    'robot_pose': [PoseStamped()],
+                    'robot_joint_state': [],
+                    'robot_joint_angles': [],
+                    'robot_joint_command': [],
                     'planned_pose': None,
                     'time': [rospy.get_time(), rospy.get_time()]
                 }
@@ -199,25 +290,31 @@ class RobotHandler:
                 # collect data
                 print('Collecting Data')
                 collected_data['time'][0] = rospy.get_time()
-                failed_rounds = 0
-                while not rospy.is_shutdown() and len(collected_data['robot_data']) < 51:
+                while not rospy.is_shutdown() and len(collected_data['robot_pose']) < 51:
                     rospy.sleep(0.05)
-                    if collected_data['robot_data'][-1] != self.robot_data or failed_rounds > 20:
-                        collected_data['robot_data'].append(self.robot_data)
-                    else:
-                        failed_rounds += 1
+                    if collected_data['robot_pose'][-1].header.seq != self.robot_pose.header.seq:
+                        collected_data['robot_pose'].append(self.robot_pose)
+                        collected_data['robot_joint_state'].append(self.robot_joint_state)
+                        collected_data['robot_joint_angles'].append(self.robot_joint_angles)
+                        collected_data['robot_joint_command'].append(self.robot_joint_command)
 
                 # if self.REAL_ROBOT_CONNECTED:
                 #     self.get_difference(q, position)
 
                 with open(dirpath + '/' + str(a) + '.pickle', 'wb') as f:
-                    collected_data['robot_data'] = collected_data['robot_data'][1:]
+                    print("Got " + str(len(collected_data['robot_pose'])))
+                    # remove initial (empty) state
+                    collected_data['robot_pose'] = collected_data['robot_pose'][1:]
+                    # get finished time
                     collected_data['time'][1] = rospy.get_time()
+                    # save data
                     pickle.dump(collected_data, f)
                     print('Finished Data Collection')
 
                 if rospy.is_shutdown():
                     exit(0)
+
+            break
 
             for a in reversed(angles[:-1]):
                 q = quaternion_from_euler(*a)
@@ -254,8 +351,11 @@ class RobotHandler:
 
         if '/j2n6s300_driver/out/tool_pose' in topics:
             print("============ FOUND real robot")
-            print("============ Subscribing to /j2n6s300_driver/out/tool_pose")
+            print("============ Subscribing to topics")
             rospy.Subscriber("/j2n6s300_driver/out/tool_pose", PoseStamped, self.receive_pose_data)
+            rospy.Subscriber("/j2n6s300_driver/out/joint_state", JointState, self.receive_joint_state)
+            rospy.Subscriber("/j2n6s300_driver/out/joint_angles", JointAngles, self.receive_joint_angles)
+            rospy.Subscriber("/j2n6s300_driver/out/joint_command", JointAngles, self.receive_joint_command)
             self.REAL_ROBOT_CONNECTED = True
         else:
             print("============ COULD NOT find real robot")
