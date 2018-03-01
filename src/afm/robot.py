@@ -6,7 +6,7 @@ import numpy as np
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, Imu
 from kinova_msgs.msg import JointAngles, ArmJointAnglesGoal, ArmJointAnglesAction
 from afm.camera import CameraThread
 import moveit_commander
@@ -36,6 +36,7 @@ class RobotHandler:
         self.robot_joint_state = JointState()
         self.robot_joint_angles = JointAngles()
         self.robot_joint_command = JointAngles()
+        self.imu_data = Imu()
 
         # currently required minimum initialization
         rospy.init_node('afm', anonymous=True)
@@ -62,6 +63,9 @@ class RobotHandler:
 
     def receive_joint_angles(self, robot_joint_command):
         self.robot_joint_command = robot_joint_command
+
+    def receive_imu_data(self, imu_data):
+        self.imu_data = imu_data
 
     def set_camera_flag(self, state):
         self.camera.FLAG = state
@@ -175,7 +179,7 @@ class RobotHandler:
         print(test_pose_1 == test_pose_2)
 
     def rerun_calibration(self):
-        rd = RobotData()
+        rd = RobotData('/home/keno/data/cal_10_1')
 
         dirpath = rd.base_path + '_rerun'
         os.mkdir(dirpath)
@@ -187,7 +191,7 @@ class RobotHandler:
             # rospy.sleep(1)
             self.joint_angle_client(joint_positions)
             # todo add proper tracking at some point
-            # self.collect_pose_data(dirpath)
+            self.collect_pose_data(dirpath, i)
 
     def joint_angle_client(self, angle_set):
         """Send a joint angle goal to the action server."""
@@ -208,7 +212,7 @@ class RobotHandler:
 
         client.send_goal(goal)
         if client.wait_for_result(rospy.Duration(20)):
-            rospy.sleep(3.0)
+            rospy.sleep(1.0)
             return client.get_result()
         else:
             print('        the joint angle action timed-out')
@@ -216,8 +220,9 @@ class RobotHandler:
 
         return None
 
-    def collect_pose_data(self, dirpath):
-        a = ()
+    def collect_pose_data(self, dirpath, index):
+
+        a = (index)
         collected_data = {
             'angle': a,
             'robot_pose': [PoseStamped()],
@@ -225,6 +230,7 @@ class RobotHandler:
             'robot_joint_angles': [],
             'robot_joint_command': [],
             'planned_pose': None,
+            'imu_data': [],
             'time': [rospy.get_time(), rospy.get_time()]
         }
 
@@ -237,6 +243,7 @@ class RobotHandler:
                 collected_data['robot_joint_state'].append(self.robot_joint_state)
                 collected_data['robot_joint_angles'].append(self.robot_joint_angles)
                 collected_data['robot_joint_command'].append(self.robot_joint_command)
+                collected_data['imu_data'].append(self.imu_data)
 
         with open(dirpath + '/' + str(a) + '.pickle', 'wb') as f:
             print("Got " + str(len(collected_data['robot_pose'])))
@@ -256,10 +263,11 @@ class RobotHandler:
         positions = [[0, 0.6, 0.5], [0, 0.6, 0.5], [0, 0.3, 0.7], [0, 0.5, 0.7]]
 
         all_angles = [
-            [(0, i * np.pi, 0) for i in np.linspace(0, 0.25, 90)],
-            [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, 90)],
-            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 90)],
-            [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 90)]
+            [(0, i * np.pi, 0) for i in np.linspace(0, 0.0555555, 11)],
+            # [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.25, 90)],
+            [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, 5)],
+            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)],
+            [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)]
         ]
 
         for i in range(4):
@@ -275,6 +283,7 @@ class RobotHandler:
                     'robot_joint_state': [],
                     'robot_joint_angles': [],
                     'robot_joint_command': [],
+                    'imu_data': [],
                     'planned_pose': None,
                     'time': [rospy.get_time(), rospy.get_time()]
                 }
@@ -297,6 +306,7 @@ class RobotHandler:
                         collected_data['robot_joint_state'].append(self.robot_joint_state)
                         collected_data['robot_joint_angles'].append(self.robot_joint_angles)
                         collected_data['robot_joint_command'].append(self.robot_joint_command)
+                        collected_data['imu_data'].append(self.imu_data)
 
                 # if self.REAL_ROBOT_CONNECTED:
                 #     self.get_difference(q, position)
@@ -356,6 +366,7 @@ class RobotHandler:
             rospy.Subscriber("/j2n6s300_driver/out/joint_state", JointState, self.receive_joint_state)
             rospy.Subscriber("/j2n6s300_driver/out/joint_angles", JointAngles, self.receive_joint_angles)
             rospy.Subscriber("/j2n6s300_driver/out/joint_command", JointAngles, self.receive_joint_command)
+            rospy.Subscriber("/mavros/imu/data", Imu, self.receive_imu_data)
             self.REAL_ROBOT_CONNECTED = True
         else:
             print("============ COULD NOT find real robot")
