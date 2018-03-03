@@ -9,7 +9,6 @@ import time
 from sensor_msgs.msg import Image
 import cv_bridge
 
-
 class CameraThread(threading.Thread):
 
     def __init__(self):
@@ -55,7 +54,7 @@ class CameraThread(threading.Thread):
 
         calibration_spot_f32 = image[x / 2 - s:x / 2 + s, y / 2 - s:y / 2 + s].astype(np.float32)
         # Define criteria = ( type, max_iter = 10 , epsilon = 1.0 )
-        criteria = (cv2.cv.CV_TERMCRIT_EPS + cv2.cv.CV_TERMCRIT_ITER, 10, 1.0)
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
 
         # Set flags (Just to avoid line break in the code)
         flags = cv2.KMEANS_RANDOM_CENTERS
@@ -111,7 +110,9 @@ class CameraThread(threading.Thread):
 
         thresh = dilated
 
-        cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.cv.CV_CHAIN_APPROX_SIMPLE)
+        _, cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+
 
         blank = np.zeros_like(image)
 
@@ -123,9 +124,11 @@ class CameraThread(threading.Thread):
 
         rect = cv2.minAreaRect(c)
 
+        print(np.array(cv2.boxPoints(rect), np.uint))
+
         # cv2.drawContours(blank, c, -1, 255, 5)
 
-        return np.array(cv2.cv.BoxPoints(rect), np.uint)
+        return np.array(cv2.boxPoints(rect), np.uint)
 
     def get_distances_between_boxes(self, box1, box2):
 
@@ -142,19 +145,57 @@ class CameraThread(threading.Thread):
 
         return np.array(distances)
 
+    def get_box_with_ar(self, image):
+
+        # Inverse threshold to get the inner contour
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # Crop image
+        _, contours, hierarchy = cv2.findContours(th, cv2.RETR_EXTERNAL,
+                                               cv2.CHAIN_APPROX_SIMPLE)
+        contours = contours[0]
+
+        epsilon = 0.1 * cv2.arcLength(contours, True)
+        approx = cv2.approxPolyDP(contours, epsilon, True)
+        print(approx)
+        image_crop = gray[approx[0, 0, 1]:approx[2, 0, 1], approx[0, 0, 0]:approx[2, 0, 0]]
+
+        self.pub.publish(self.bridge.cv2_to_imgmsg(image_crop, encoding='8UC1'))
+
+        return
+
+        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_ORIGINAL)
+        
+        cameraMatrix = np.array(np.mat('657.45 0. 319.50; 0. 657.46 239.50; 0. 0. 1.'))
+        distCoeffs = np.array(np.mat('.418; .507; 0.; 0.; -.578'))
+
+        parameters = cv2.aruco.DetectorParameters_create()
+
+        # Detect all markers
+        corners, ids, rejectedImgPoints = cv2.aruco.detectMarkers(image, aruco_dict, parameters=parameters)
+
+        # Assume we are only tracking one marker
+        rvecs, tvecs, objPoints = cv2.aruco.estimatePoseSingleMarkers(corners, 2.5, cameraMatrix, distCoeffs)
+
+        image = cv2.aruco.drawDetectedMarkers(image, corners)
+
+        self.pub.publish(self.bridge.cv2_to_imgmsg(image, encoding='8UC1'))
+        pass
+
     def calibrate_edges(self, image):
 
         box = self.get_box_from_image(image)
 
-        if len(box) > 0:
+        if len(box) == 4:
             if len(self.calibration_boxes) == 0:
-                self.calibration_boxes.append(box)
+                self.calibration_boxes.append(np.array([np.array(c) for c in box]))
             else:
-                sorted_box = [None, None, None, None]
-                for p in box:
-                    closest = np.argmin([np.linalg.norm(p - p_o) for p_o in self.calibration_boxes[0]])
-                    sorted_box[closest] = p
-                self.calibration_boxes.append(sorted_box)
+                # sorted_box = [None, None, None, None]
+                # for p in box:
+                #     closest = np.argmin([np.linalg.norm(p - p_o) for p_o in self.calibration_boxes[0]])
+                #     sorted_box[closest] = p
+                # self.calibration_boxes.append(np.array(sorted_box, dtype=np.uint64))
+                self.calibration_boxes.append(np.array(box, dtype=np.uint64))
 
             if len(self.calibration_boxes) > 20:
                 # min_box = np.min(self.calibration_boxes, axis=0)
@@ -216,6 +257,7 @@ class CameraThread(threading.Thread):
         return False
 
     def receive_camera_data(self, camera_data):
+
         if self.frame_count == 0:
             self.start_time = time.time()
 
@@ -226,7 +268,7 @@ class CameraThread(threading.Thread):
             return
 
         np_arr = np.fromstring(camera_data.data, np.uint8)
-        image_np = cv2.imdecode(np_arr, cv2.CV_LOAD_IMAGE_GRAYSCALE)
+        image_np = cv2.imdecode(np_arr, cv2.IMREAD_GRAYSCALE)
 
         if self.FLAG == 'CALIBRATE':
             # set initial data for sliding reference
@@ -244,6 +286,7 @@ class CameraThread(threading.Thread):
             # print(camera_data)
             # cv2.imwrite('test.jpg', image_np)
 
+            # self.get_box_with_ar(image_np)
             if self.has_cube_moved(image_np):
                 # print("DETECTED SLIDE")
                 self.has_slid = True
