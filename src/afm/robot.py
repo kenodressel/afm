@@ -31,6 +31,9 @@ class RobotHandler:
 
         print("============ started robot init")
 
+        # currently required minimum initialization
+        rospy.init_node('afm', anonymous=True)
+
         self.camera = None
         self.REAL_ROBOT_CONNECTED = False
         self.IMU_CONNTECTED = False
@@ -39,13 +42,10 @@ class RobotHandler:
         self.robot_joint_angles = JointAngles()
         self.robot_joint_command = JointAngles()
         self.imu_data = Imu()
+        self.data_directory = '~/data/sliding/' + str(rospy.get_time())
 
-        # currently required minimum initialization
-        rospy.init_node('afm', anonymous=True)
-        moveit_commander.roscpp_initialize(sys.argv)
-        self.robot = moveit_commander.RobotCommander()
-        self.group = moveit_commander.MoveGroupCommander("arm")
-        self.group.set_goal_orientation_tolerance(0.0001)
+        self.robot = None
+        self.group = None
 
         # pose library
         self.pose_library = PoseLibrary('/home/keno/pose_lib.pickle')
@@ -75,12 +75,18 @@ class RobotHandler:
     def set_camera_flag(self, state):
         self.camera.FLAG = state
 
+    def init_moveit(self):
+        moveit_commander.roscpp_initialize(sys.argv)
+        self.robot = moveit_commander.RobotCommander()
+        self.group = moveit_commander.MoveGroupCommander("arm")
+        self.group.set_goal_orientation_tolerance(0.0001)
+
     def get_current_euler(self):
         real_q = self.robot_pose.pose.orientation
         real_euler = euler_from_quaternion(np.array([real_q.x, real_q.y, real_q.z, real_q.w]))
 
         # do some remapping
-        real_euler = np.array([real_euler[1], real_euler[0] * -1, real_euler[2] + 1.57])
+        # real_euler = np.array([real_euler[1], real_euler[0] * -1, real_euler[2] + 1.57])
         return real_euler
 
     def get_difference(self, planned_q, planned_coord):
@@ -102,60 +108,15 @@ class RobotHandler:
 
         return difference_position, difference_euler  # , difference_quanternion
 
-    def rotate_arm(self, angles, position):
-
-        print("============ Rotating arm")
-
-        pose_target = Pose()
-
-        for a in angles:
-
-            q = quaternion_from_euler(*a)
-
-            pose_target.orientation.x = q[0]
-            pose_target.orientation.y = q[1]
-            pose_target.orientation.z = q[2]
-            pose_target.orientation.w = q[3]
-            pose_target.position.x = position[0]
-            pose_target.position.y = position[1]
-            pose_target.position.z = position[2]
-
-            self.group.set_pose_target(pose_target)
-
-            # plan1 = self.group.plan()
-
-            if self.camera is not None and self.camera.has_slid:
-                print("SLIDING RECEIVED, STOPPING")
-                # self.camera.has_slid = False
-                # self.group.execute(plan1)
-                return "SLIDING"
-
-            print("Going to " + str(max(a) * (180 / np.pi)) + " degree")
-
-            # run command async so camera can collect data
-
-            self.group.go(wait=False)
-            rospy.sleep(1)
-
-            if self.REAL_ROBOT_CONNECTED:
-                self.get_difference(q, position)
-
-            # RESET
-            self.group.clear_pose_targets()
-
-            if rospy.is_shutdown():
-                exit(0)
-
-        return "DONE"
-
     def reset_arm(self):
 
-        q = quaternion_from_euler(0, 0, 0)
         position = [0, 0.6, 0.5]
 
-        self.set_arm_position(position, q)
+        self.set_arm_position(position, (0, 0, 0))
 
-    def set_arm_position(self, position, orientation):
+    def set_arm_position(self, position, euler):
+
+        orientation = quaternion_from_euler(*euler)
 
         pose_target = Pose()
 
@@ -175,14 +136,6 @@ class RobotHandler:
 
         return pose_target
 
-    def run_debug_code(self):
-
-        test_pose_1 = Pose()
-        test_pose_1.orientation.x = 0.01
-        test_pose_2 = Pose()
-        test_pose_2.orientation.x = 0.01
-        print(test_pose_1 == test_pose_2)
-
     def rerun_calibration(self):
         rd = RobotData('/home/keno/data/cal_10_1')
 
@@ -191,52 +144,55 @@ class RobotHandler:
 
         print("FOUND " + str(len(rd.files)))
         for i in range(len(rd.files)):
-            joint_positions = rd.get_average_joint_position(i)
+            all_joint_pos = rd.load_file_index(i)['robot_joint_angles']
+            joint_positions = rd.get_average_joint_position(all_joint_pos)
             print(joint_positions)
-            # rospy.sleep(1)
-            self.joint_angle_client(joint_positions)
+            self.move_arm_with_joint_control(joint_positions)
             # todo add proper tracking at some point
             self.collect_pose_data(dirpath, i)
 
-    def joint_angle_client(self, angle_set):
-        """Send a joint angle goal to the action server."""
+    def move_arm_with_joint_control(self, angle_set):
+
         action_address = '/j2n6s300_driver/joints_action/joint_angles'
-        client = actionlib.SimpleActionClient(action_address,
-                                              ArmJointAnglesAction)
+        client = actionlib.SimpleActionClient(action_address, ArmJointAnglesAction)
         client.wait_for_server()
 
         goal = ArmJointAnglesGoal()
 
-        goal.angles.joint1 = angle_set['joint1']
-        goal.angles.joint2 = angle_set['joint2']
-        goal.angles.joint3 = angle_set['joint3']
-        goal.angles.joint4 = angle_set['joint4']
-        goal.angles.joint5 = angle_set['joint5']
-        goal.angles.joint6 = angle_set['joint6']
-        goal.angles.joint7 = angle_set['joint7']
+        goal.angles.joint1 = angle_set.joint1
+        goal.angles.joint2 = angle_set.joint2
+        goal.angles.joint3 = angle_set.joint3
+        goal.angles.joint4 = angle_set.joint4
+        goal.angles.joint5 = angle_set.joint5
+        goal.angles.joint6 = angle_set.joint6
+        goal.angles.joint7 = angle_set.joint7
 
         client.send_goal(goal)
+
         if client.wait_for_result(rospy.Duration(20)):
-            rospy.sleep(1.0)
+            # rospy.sleep(1.0)
             return client.get_result()
         else:
-            print('        the joint angle action timed-out')
+            print('the joint angle action timed-out')
             client.cancel_all_goals()
 
         return None
 
-    def collect_pose_data(self, dirpath, index):
+    def collect_pose_data(self, dir_path, index):
 
-        a = (index)
+        a = index
         collected_data = self.wait_for_data(a)
 
-        with open(dirpath + '/' + str(a) + '.pickle', 'wb') as f:
+        with open(dir_path + '/' + str(a) + '.pickle', 'wb') as f:
             print("Got " + str(len(collected_data['robot_pose'])))
             # save data
             pickle.dump(collected_data, f)
             print('Finished Data Collection')
 
     def wait_for_data(self, a, planned_pose=None, amount=50):
+
+        if not self.REAL_ROBOT_CONNECTED:
+            raise EnvironmentError('Connect a real robot to gather data.')
 
         collected_data = {
             'angle': a,
@@ -252,7 +208,7 @@ class RobotHandler:
         print('Collecting Data')
         collected_data['time'][0] = rospy.get_time()
         while not rospy.is_shutdown() and len(collected_data['robot_pose']) < amount + 1:
-            rospy.sleep(0.05)
+            rospy.sleep(0.02)
             if collected_data['robot_pose'][-1].header.seq != self.robot_pose.header.seq:
                 collected_data['robot_pose'].append(self.robot_pose)
                 collected_data['robot_joint_state'].append(self.robot_joint_state)
@@ -269,28 +225,96 @@ class RobotHandler:
 
         return collected_data
 
+    def collect_joint_data_and_add_to_library(self, a, planned_pose=None):
+
+        if not self.REAL_ROBOT_CONNECTED:
+            raise AssertionError('TRYING TO COLLECT DATA WITH NO ROBOT')
+
+        collected_data = self.wait_for_data(a, planned_pose=planned_pose, amount=5)
+        self.analyze_collected_data(collected_data)
+
+        # get average positions
+        orientation = []
+        real_positions = []
+        for p in collected_data['robot_pose']:
+            o = p.pose.orientation
+            orientation.append([o.x, o.y, o.z, o.w])
+            pos = p.pose.position
+            real_positions.append([pos.x, pos.y, pos.z])
+
+        orientation = np.average(orientation, axis=0)
+        real_positions = np.average(real_positions, axis=0)
+
+        p = Pose()
+        p.position.x = real_positions[0]
+        p.position.y = real_positions[1]
+        p.position.z = real_positions[2]
+        p.orientation.x = orientation[0]
+        p.orientation.y = orientation[1]
+        p.orientation.z = orientation[2]
+        p.orientation.w = orientation[3]
+
+        joint_arr = np.average([
+            [
+                s.joint1,
+                s.joint2,
+                s.joint3,
+                s.joint4,
+                s.joint5,
+                s.joint6,
+                s.joint7
+            ] for s in collected_data['robot_joint_angles']], axis=0)
+
+        j = JointAngles()
+        j.joint1 = joint_arr[0]
+        j.joint2 = joint_arr[1]
+        j.joint3 = joint_arr[2]
+        j.joint4 = joint_arr[3]
+        j.joint5 = joint_arr[4]
+        j.joint6 = joint_arr[5]
+        j.joint7 = joint_arr[6]
+
+        self.pose_library.add_pose_to_library(p, j)
+
     def build_angle_library(self):
 
         # self.pose_library.print_pose_index(0)
         # return
 
         # positions = [[0, 0.6, 0.5], [0, 0.6, 0.5], [0, 0.3, 0.6], [0, 0.5, 0.6]]
-        positions = [[0, 0.4, 0.4], [0, 0.4, 0.4], [0, 0.4, 0.4], [0, 0.4, 0.4]]
+        # positions = [[0, 0.4, 0.4], [0, 0.4, 0.4], [0, 0.4, 0.4], [0, 0.4, 0.4]]
+        # positions = [[0, 0.5, 0.4], [0, 0.5, 0.4], [0, 0.5, 0.4], [0, 0.5, 0.4]]
+        # positions = [[0, 0.4, 0.5], [0, 0.35, 0.5]]
+        # positions = [[0, 0.35, 0.5]]
+        positions = [[0, 0.5, 0.4], [0, 0.5, 0.4], [0, 0.4, 0.5], [0, 0.35, 0.5]]
+        # positions = [[0, 0.5, 0.4], [0, 0.5, 0.4], [-0.4, 0, 0.5], [-0.4, 0, 0.5]]
+
+        steps = 100
+
+        # all_angles = [
+        #     # [(0, i * np.pi, 0) for i in np.linspace(0, 0.0555555, 11)],
+        #     [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, steps)],
+        #     [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, steps)],
+        #     [(i * np.pi, 0, 0) for i in np.linspace(0, 0.5, steps)],
+        #     [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.5, steps)]
+        # ]
 
         all_angles = [
             # [(0, i * np.pi, 0) for i in np.linspace(0, 0.0555555, 11)],
-            [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, 50)],
-            [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, 50)],
-            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 50)],
-            [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 50)]
+            [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, steps)],
+            [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, steps)],
+            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, steps)],
+            [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, steps)]
         ]
+
+        reset_steps = 5
 
         all_reverse_angles = [
             # [(0, i * np.pi, 0) for i in np.linspace(0, 0.0555555, 11)],
-            [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, 4)],
-            [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, 4)],
-            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)],
-            [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)]
+            [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, reset_steps)],
+            [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, reset_steps)],
+            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, reset_steps)],  # 0.375
+            [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, reset_steps)]
         ]
 
         # all_angles = [
@@ -304,66 +328,19 @@ class RobotHandler:
             rev_angles = all_reverse_angles[i]
             datas = []
             for a in angles:
-                q = quaternion_from_euler(*a)
 
                 print("Going to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
-                planned_pose = self.set_arm_position(position, q)
+                planned_pose = self.set_arm_position(position, *a)
 
                 # wait for systems to catch up
-                rospy.sleep(1)
+                rospy.sleep(0.5)
 
-                collected_data = self.wait_for_data(a, planned_pose=planned_pose, amount=10)
-                self.analyze_collected_data(collected_data)
-                datas.append(collected_data)
-
-                # get average positions
-                orientation = []
-                real_positions = []
-                for p in collected_data['robot_pose']:
-                    o = p.pose.orientation
-                    orientation.append([o.x, o.y, o.z, o.w])
-                    pos = p.pose.position
-                    real_positions.append([pos.x, pos.y, pos.z])
-
-                orientation = np.average(orientation, axis=0)
-                real_positions = np.average(real_positions, axis=0)
-
-                p = Pose()
-                p.position.x = real_positions[0]
-                p.position.y = real_positions[1]
-                p.position.z = real_positions[2]
-                p.orientation.x = orientation[0]
-                p.orientation.y = orientation[1]
-                p.orientation.z = orientation[2]
-                p.orientation.w = orientation[3]
-
-                joint_arr = np.average([
-                    [
-                        s.joint1,
-                        s.joint2,
-                        s.joint3,
-                        s.joint4,
-                        s.joint5,
-                        s.joint6,
-                        s.joint7
-                    ] for s in collected_data['robot_joint_angles']], axis=0)
-
-                j = JointAngles()
-                j.joint1 = joint_arr[0]
-                j.joint2 = joint_arr[1]
-                j.joint3 = joint_arr[2]
-                j.joint4 = joint_arr[3]
-                j.joint5 = joint_arr[4]
-                j.joint6 = joint_arr[5]
-                j.joint7 = joint_arr[6]
-
-                self.pose_library.add_pose_to_library(p, j)
+                self.collect_joint_data_and_add_to_library(a, planned_pose)
 
             for a in reversed(rev_angles[:-1]):
-                q = quaternion_from_euler(*a)
 
                 print("Resetting to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
-                self.set_arm_position(position, q)
+                self.set_arm_position(position, *a)
 
                 rospy.sleep(1)
 
@@ -401,6 +378,19 @@ class RobotHandler:
         print(collected_data['robot_joint_angles'][0])
         pass
 
+    def debug_gathered_data(self):
+        all_angles = [
+            # [(0, i * np.pi, 0) for i in np.linspace(0, 0.0555555, 11)],
+            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.5, 180)],
+        ]
+
+        for ac in all_angles:
+            for a in ac:
+                angles = self.pose_library.get_closest_pose_to_euler_angle(*a)
+                self.move_arm_with_joint_control(angles)
+                self.collect_joint_data_and_add_to_library(a)
+        pass
+
     def run_calibration(self):
         dirpath = '/home/keno/data/' + str(rospy.get_time())
         os.mkdir(dirpath)
@@ -409,11 +399,14 @@ class RobotHandler:
 
         all_angles = [
             # [(0, i * np.pi, 0) for i in np.linspace(0, 0.0555555, 11)],
-            [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.25, 90)],
+            [(0, i * np.pi, 0) for i in np.linspace(0, 0.25, 90)],
             [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, 5)],
             [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)],
             [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)]
         ]
+
+        # FOR IK X = Y and Y = X
+        # AFTER SWITCH new Y (old X) is still negative
 
         for i in range(4):
 
@@ -433,10 +426,9 @@ class RobotHandler:
                     'time': [rospy.get_time(), rospy.get_time()]
                 }
 
-                q = quaternion_from_euler(*a)
 
                 print("Going to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
-                collected_data['planned_pose'] = self.set_arm_position(position, q)
+                collected_data['planned_pose'] = self.set_arm_position(position, *a)
 
                 # wait for systems to catch up
                 rospy.sleep(1)
@@ -470,10 +462,9 @@ class RobotHandler:
                     exit(0)
 
             for a in reversed(angles[:-1]):
-                q = quaternion_from_euler(*a)
 
                 print("Resetting to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
-                self.set_arm_position(position, q)
+                self.set_arm_position(position, *a)
 
                 rospy.sleep(1)
 
@@ -524,39 +515,95 @@ class RobotHandler:
         else:
             print("============ COULD NOT find real robot")
 
-    def run_demo_experiment(self):
+    def run_single_experiment(self, position, angles):
 
-        print("============ Resetting arm")
+        print("============ Rotating arm")
 
-        self.reset_arm()
+        for a in angles:
 
-        angles = [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, 50)]
+            angles = self.pose_library.get_closest_pose_to_euler_angle(*a)
 
-        print("============ Running test")
-        position = [0, 0.6, 0.5]
-        status = self.rotate_arm(angles, position)
+            if self.camera is not None and self.camera.has_slid:
+                print("SLIDING RECEIVED, STOPPING")
+                # self.group.execute(plan1)
+                self.collect_sliding_angles()
+                return "SLIDING"
 
-        if status == 'SLIDING':
-            # reset to 0
-            print(self.get_current_euler())
-            self.reset_arm()
+            print("Going to " + str(max(a) * (180 / np.pi)) + " degree")
+            self.move_arm_with_joint_control(angles)
 
-        if status == 'DONE':
-            # reset to 0
-            self.reset_arm()
+            if self.camera is not None and self.camera.has_slid:
+                print("SLIDING RECEIVED, STOPPING")
+                # self.camera.has_slid = False
+                # self.group.execute(plan1)
+                return "SLIDING"
+
+            self.collect_joint_data_and_add_to_library(a)
+
+            if rospy.is_shutdown():
+                exit(0)
+
+        return "DONE"
+
+    def run_real_experiment(self):
+        self.REAL_ROBOT_CONNECTED = True
+        if not self.REAL_ROBOT_CONNECTED or self.camera is None:
+            raise EnvironmentError('Camera or Robot not connected')
+
+        positions = [[0, 0.5, 0.4], [0, 0.5, 0.4], [0, 0.4, 0.5], [0, 0.35, 0.5]]
+
+        steps = 5
+        sets = 1
+
+        all_angles = [
+            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.25, steps)],
+            [(- 1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.5, steps)],
+            [(0, i * np.pi, 0) for i in np.linspace(0, 0.375, steps)],
+            [(0, -1 * i * np.pi, 0) for i in np.linspace(0, 0.375, steps)]
+        ]
+
+        for _ in range(sets):
+            self.set_arm_position(positions[0], (0, 0, 0))
+            self.calibrate_camera()
+            d = self.camera.pick_best_direction()
+            self.run_single_experiment(positions[d], all_angles[d])
 
         self.shutdown()
 
     def calibrate_camera(self):
         if self.camera is None:
-            print("Skipping Calibration, no camera detected")
-            return
+            raise EnvironmentError('No camera found')
 
         self.camera.start_calibration()
 
         while not rospy.is_shutdown() and self.camera.FLAG == 'CALIBRATE':
             rospy.sleep(1)
             pass
+
+    def collect_sliding_angles(self):
+
+        results = []
+        if os.path.isfile(self.data_directory + '_sliding_data.pickle'):
+            with open(self.data_directory + '_sliding_data.pickle', 'rb') as f:
+                results = pickle.load(f)
+
+        eulers = []
+        for i in range(3):
+            rospy.sleep(0.1)
+            eulers.append(self.get_current_euler())
+
+        eulers = np.average(eulers, axis=0)
+
+        results.append({
+            'euler': eulers,
+            'time': rospy.get_time()
+        })
+
+        with open(self.data_directory + '_sliding_data.pickle', 'rb') as f:
+            results = pickle.load(f)
+
+        self.camera.has_slid = False
+        pass
 
     def shutdown(self):
 

@@ -2,6 +2,7 @@ import pickle
 import numpy as np
 import glob
 import os
+from kinova_msgs.msg import JointAngles
 
 
 class RobotData:
@@ -26,8 +27,9 @@ class RobotData:
             data = pickle.load(f)
             return data
 
-    def get_average_joint_position(self, index):
-        data = self.load_file_index(index)
+    def get_average_joint_position(self, joint_positions):
+
+        ja = JointAngles()
 
         avg = np.average([
             [
@@ -38,9 +40,15 @@ class RobotData:
                 d.joint5,
                 d.joint6,
                 d.joint7
-            ] for d in data['robot_joint_command']
+            ] for d in joint_positions
         ], axis=0)
 
-        return {
-            "joint" + str(i + 1): a for i, a in enumerate(avg)
-        }
+        ja.joint1 = avg[0]
+        ja.joint2 = avg[1]
+        ja.joint3 = avg[2]
+        ja.joint4 = avg[3]
+        ja.joint5 = avg[4]
+        ja.joint6 = avg[5]
+        ja.joint7 = avg[6]
+
+        return ja

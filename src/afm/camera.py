@@ -9,12 +9,15 @@ import time
 from sensor_msgs.msg import Image
 import cv_bridge
 
+
 class CameraThread(threading.Thread):
 
     def __init__(self):
         super(CameraThread, self).__init__()
         self.FLAG = 'IGNORE'
         self.has_slid = False
+        self.current_box = [(0, 0), (0, 0), (0, 0), (0, 0)]
+        self.image_size = (0, 0)
         # stats
         self.frame_count = 0
         self.start_time = 0
@@ -43,6 +46,13 @@ class CameraThread(threading.Thread):
         print('Starting Camera Calibration')
         # set flag
         self.FLAG = 'CALIBRATE'
+
+    def pick_best_direction(self):
+
+        maxima = np.array(self.image_size) - np.max(self.current_box, axis=0)
+        minima = np.min(self.current_box, axis=0)
+        directions = [maxima[1], minima[0], minima[1], maxima[0]]
+        return np.argmin(directions)
 
     def use_color_calibration(self, image):
 
@@ -112,8 +122,6 @@ class CameraThread(threading.Thread):
 
         _, cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-
-
         blank = np.zeros_like(image)
 
         c = cnts[0]
@@ -123,8 +131,6 @@ class CameraThread(threading.Thread):
             c = sorted_cnt[0]
 
         rect = cv2.minAreaRect(c)
-
-        print(np.array(cv2.boxPoints(rect), np.uint))
 
         # cv2.drawContours(blank, c, -1, 255, 5)
 
@@ -144,43 +150,6 @@ class CameraThread(threading.Thread):
             distances[closest] = temp_distances[closest]
 
         return np.array(distances)
-
-    def get_box_with_ar(self, image):
-
-        # Inverse threshold to get the inner contour
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-        # Crop image
-        _, contours, hierarchy = cv2.findContours(th, cv2.RETR_EXTERNAL,
-                                               cv2.CHAIN_APPROX_SIMPLE)
-        contours = contours[0]
-
-        epsilon = 0.1 * cv2.arcLength(contours, True)
-        approx = cv2.approxPolyDP(contours, epsilon, True)
-        print(approx)
-        image_crop = gray[approx[0, 0, 1]:approx[2, 0, 1], approx[0, 0, 0]:approx[2, 0, 0]]
-
-        self.pub.publish(self.bridge.cv2_to_imgmsg(image_crop, encoding='8UC1'))
-
-        return
-
-        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_ORIGINAL)
-        
-        cameraMatrix = np.array(np.mat('657.45 0. 319.50; 0. 657.46 239.50; 0. 0. 1.'))
-        distCoeffs = np.array(np.mat('.418; .507; 0.; 0.; -.578'))
-
-        parameters = cv2.aruco.DetectorParameters_create()
-
-        # Detect all markers
-        corners, ids, rejectedImgPoints = cv2.aruco.detectMarkers(image, aruco_dict, parameters=parameters)
-
-        # Assume we are only tracking one marker
-        rvecs, tvecs, objPoints = cv2.aruco.estimatePoseSingleMarkers(corners, 2.5, cameraMatrix, distCoeffs)
-
-        image = cv2.aruco.drawDetectedMarkers(image, corners)
-
-        self.pub.publish(self.bridge.cv2_to_imgmsg(image, encoding='8UC1'))
-        pass
 
     def calibrate_edges(self, image):
 
@@ -216,6 +185,7 @@ class CameraThread(threading.Thread):
     def has_cube_moved(self, image):
 
         box = self.get_box_from_image(image)
+        self.current_box = box
 
         corners_reporting_movement = 0
 
@@ -274,7 +244,7 @@ class CameraThread(threading.Thread):
             # set initial data for sliding reference
 
             # self.use_color_calibration(image_np)
-
+            self.image_size = image_np.shape
             if self.calibrate_edges(image_np):
                 self.FLAG = 'READY'
                 print('Finished Camera Calibration')
