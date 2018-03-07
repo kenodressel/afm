@@ -17,7 +17,9 @@ class CameraThread(threading.Thread):
         self.FLAG = 'IGNORE'
         self.has_slid = False
         self.current_box = [(0, 0), (0, 0), (0, 0), (0, 0)]
+        self.current_image = np.array([])
         self.image_size = (0, 0)
+        self.expected_offset = 0
         # stats
         self.frame_count = 0
         self.start_time = 0
@@ -107,18 +109,19 @@ class CameraThread(threading.Thread):
 
     def get_box_from_image(self, image):
 
-        edges = cv2.Canny(image, 50, 100)
+        ret, thresh = cv2.threshold(image, 30, 255, cv2.THRESH_BINARY_INV)
+        # self.pub.publish(self.bridge.cv2_to_imgmsg(thresh, encoding='8UC1'))
 
-        # edges = cv2.morphologyEx(edges, cv2.MORPH_OPEN, np.ones((3, 3)), iterations=1)
+        # edges = cv2.Canny(image, 50, 100)
 
-        # self.pub.publish(self.bridge.cv2_to_imgmsg(edges, encoding='8UC1'))
+        # actually useful stuff
+        # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        # dilated = cv2.dilate(edges, kernel, iterations=2)
+        # thresh = dilated
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-        dilated = cv2.dilate(edges, kernel, iterations=2)
-
+        # not used
+        # dilated = cv2.morphologyEx(dilated, cv2.MORPH_OPEN, np.ones((3, 3)), iterations=5)
         # thresh = cv2.morphologyEx(dilated, cv2.MORPH_CLOSE, kernel, iterations=8)
-
-        thresh = dilated
 
         _, cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -133,8 +136,25 @@ class CameraThread(threading.Thread):
         rect = cv2.minAreaRect(c)
 
         # cv2.drawContours(blank, c, -1, 255, 5)
+        box_points = cv2.boxPoints(rect)
+        corner_issues = 0
+        for i, p in enumerate(box_points):
+            while max(p) > max(self.image_size):
+                # out of bounds, so we need a new plan
+                box_points[i][np.argmax(p)] = max(self.image_size)
 
-        return np.array(cv2.boxPoints(rect), np.uint)
+                corner_issues += 1
+
+            while min(p) < 0:
+                # out of bounds, so we need a new plan
+                box_points[i][np.argmin(p)] = 0
+                corner_issues += 1
+
+        if corner_issues > 1:
+            print('Corners off bounds: ' + str(corner_issues))
+            print('Sending new distances' + str(box_points))
+
+        return np.array(box_points, dtype=np.int)
 
     def get_distances_between_boxes(self, box1, box2):
 
@@ -155,6 +175,9 @@ class CameraThread(threading.Thread):
 
         box = self.get_box_from_image(image)
 
+        # No movement during calibration
+        self.has_slid = False
+
         if len(box) == 4:
             if len(self.calibration_boxes) == 0:
                 self.calibration_boxes.append(np.array([np.array(c) for c in box]))
@@ -171,10 +194,17 @@ class CameraThread(threading.Thread):
                 max_box = np.max(self.calibration_boxes, axis=0)
 
                 self.reference_box = np.average(self.calibration_boxes, axis=0)
-                self.expected_variance = self.get_distances_between_boxes(self.reference_box, max_box)
+                self.expected_variance = np.sum(np.std(self.calibration_boxes, axis=0), axis=1)
 
                 print(self.reference_box)
                 print(self.expected_variance)
+
+                # reset old variables
+                self.calibration_boxes = []
+
+                if sum(self.expected_variance) > 120:
+                    # the variance is too high, need lower variance
+                    return False
 
                 return True
         else:
@@ -186,26 +216,32 @@ class CameraThread(threading.Thread):
 
         box = self.get_box_from_image(image)
         self.current_box = box
+        self.current_image = image
 
         corners_reporting_movement = 0
 
         distances = self.get_distances_between_boxes(self.reference_box, box)
-        normed_distance = distances - self.expected_variance
+        normed_distance = np.abs(distances - self.expected_variance)
 
         for d in normed_distance:
-            if d > 10:
+            if d > 10 + self.expected_offset / 1.5:
                 corners_reporting_movement += 1
 
+        if sum(normed_distance) > 200:
+            corners_reporting_movement = 4
+
         self.last_box_positions.append(box)
+
+        # print(np.array(normed_distance, np.int), corners_reporting_movement, 10 + self.expected_offset / 1.5)
 
         if len(self.last_box_positions) > 5:
             self.last_box_positions.pop(0)
 
         cv2.drawContours(image, [box], -1, 255, 5)
 
-        cX, cY = np.int0(np.average(box, axis=0))
+        # cX, cY = np.int0(np.average(box, axis=0) - np.average(self.reference_box, axis=0))
         # print(cX, cY)
-
+        cX, cY = np.int0(np.average(box, axis=0))
         # draw the contour and center of the shape on the image
 
         try:

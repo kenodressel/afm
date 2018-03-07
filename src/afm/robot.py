@@ -14,6 +14,7 @@ import pickle
 import os
 from afm.data import RobotData
 from afm.pose_library import PoseLibrary
+from shape_msgs.msg import SolidPrimitive
 
 
 # import moveit_msgs.msg
@@ -42,7 +43,7 @@ class RobotHandler:
         self.robot_joint_angles = JointAngles()
         self.robot_joint_command = JointAngles()
         self.imu_data = Imu()
-        self.data_directory = '~/data/sliding/' + str(rospy.get_time())
+        self.data_directory = '/home/keno/data/sliding/' + str(rospy.get_time())
 
         self.robot = None
         self.group = None
@@ -114,7 +115,7 @@ class RobotHandler:
 
         self.set_arm_position(position, (0, 0, 0))
 
-    def set_arm_position(self, position, euler):
+    def set_arm_position(self, position, euler, force_small_motion=False):
 
         orientation = quaternion_from_euler(*euler)
 
@@ -129,8 +130,38 @@ class RobotHandler:
         pose_target.position.z = position[2]
 
         self.group.set_pose_target(pose_target)
+        plan_dist = 100
+        runs = 0
+        threshold = 2
 
-        self.group.go(wait=True)
+        plans = []
+        distances = []
+
+        while plan_dist > threshold:
+            print("Planning")
+            plan = self.group.plan()
+            points = plan.joint_trajectory.points
+            positions = [p.positions for p in points]
+            dist = [np.linalg.norm(np.array(p) - np.array(positions[i - 1])) for i, p in enumerate(positions)]
+            plan_dist = sum(dist[1:])
+            runs += 1
+            if runs > 1:
+                print(plan_dist, threshold)
+
+            if not force_small_motion:
+                plans.append(plan)
+                distances.append(plan_dist)
+                if len(plans) > 9:
+                    plan = plans[np.argmin(distances)]
+                    plan_dist = np.min(distances)
+                    break
+
+            if runs > 10:
+                print("could not find appropriate plan. Exiting")
+                return None
+
+        print(plan_dist)
+        self.group.execute(plan, wait=True)
 
         self.group.clear_pose_targets()
 
@@ -328,9 +359,8 @@ class RobotHandler:
             rev_angles = all_reverse_angles[i]
             datas = []
             for a in angles:
-
                 print("Going to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
-                planned_pose = self.set_arm_position(position, *a)
+                planned_pose = self.set_arm_position(position, a)
 
                 # wait for systems to catch up
                 rospy.sleep(0.5)
@@ -338,9 +368,8 @@ class RobotHandler:
                 self.collect_joint_data_and_add_to_library(a, planned_pose)
 
             for a in reversed(rev_angles[:-1]):
-
                 print("Resetting to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
-                self.set_arm_position(position, *a)
+                self.set_arm_position(position, a)
 
                 rospy.sleep(1)
 
@@ -426,9 +455,8 @@ class RobotHandler:
                     'time': [rospy.get_time(), rospy.get_time()]
                 }
 
-
                 print("Going to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
-                collected_data['planned_pose'] = self.set_arm_position(position, *a)
+                collected_data['planned_pose'] = self.set_arm_position(position, a)
 
                 # wait for systems to catch up
                 rospy.sleep(1)
@@ -462,9 +490,8 @@ class RobotHandler:
                     exit(0)
 
             for a in reversed(angles[:-1]):
-
                 print("Resetting to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
-                self.set_arm_position(position, *a)
+                self.set_arm_position(position, a)
 
                 rospy.sleep(1)
 
@@ -523,20 +550,15 @@ class RobotHandler:
 
             angles = self.pose_library.get_closest_pose_to_euler_angle(*a)
 
-            if self.camera is not None and self.camera.has_slid:
+            if self.camera is not None and self.camera.has_slid and self.camera.FLAG == 'READY':
                 print("SLIDING RECEIVED, STOPPING")
                 # self.group.execute(plan1)
                 self.collect_sliding_angles()
+                self.camera.has_slid = False
                 return "SLIDING"
 
             print("Going to " + str(max(a) * (180 / np.pi)) + " degree")
             self.move_arm_with_joint_control(angles)
-
-            if self.camera is not None and self.camera.has_slid:
-                print("SLIDING RECEIVED, STOPPING")
-                # self.camera.has_slid = False
-                # self.group.execute(plan1)
-                return "SLIDING"
 
             self.collect_joint_data_and_add_to_library(a)
 
@@ -545,28 +567,64 @@ class RobotHandler:
 
         return "DONE"
 
+    def run_single_experiment_ik(self, position, angles):
+
+        print("============ Rotating arm")
+
+        for a in angles:
+
+            # angles = self.pose_library.get_closest_pose_to_euler_angle(*a)
+
+            if self.camera is not None and self.camera.has_slid:
+                print("SLIDING RECEIVED, STOPPING")
+                # self.group.execute(plan1)
+                self.collect_sliding_angles()
+                self.camera.has_slid = False
+                return "SLIDING"
+
+            print("Going to " + str(max(abs(np.array(a))) * (180 / np.pi)) + " degree")
+
+            # TODO REMOVE IF NO GRAVITY OFFSET IS EXPECTED
+            self.camera.expected_offset = max(abs(np.array(a))) * (180 / np.pi)
+
+            self.set_arm_position(position, a, force_small_motion=True)
+            rospy.sleep(0.5)
+
+            # self.collect_joint_data_and_add_to_library(a)
+
+            if rospy.is_shutdown():
+                exit(0)
+
+        return "DONE"
+
     def run_real_experiment(self):
-        self.REAL_ROBOT_CONNECTED = True
+
+        # self.camera = []
         if not self.REAL_ROBOT_CONNECTED or self.camera is None:
             raise EnvironmentError('Camera or Robot not connected')
+        # self.camera = None
 
-        positions = [[0, 0.5, 0.4], [0, 0.5, 0.4], [0, 0.4, 0.5], [0, 0.35, 0.5]]
+        positions = [[0, 0.35, 0.5], [0, 0.5, 0.4], [0, 0.4, 0.5], [0, 0.5, 0.4]]
 
-        steps = 5
-        sets = 1
+        steps = 50
+        sets = 20
 
         all_angles = [
-            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.25, steps)],
-            [(- 1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.5, steps)],
-            [(0, i * np.pi, 0) for i in np.linspace(0, 0.375, steps)],
-            [(0, -1 * i * np.pi, 0) for i in np.linspace(0, 0.375, steps)]
+            [(- 1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, steps)],
+            [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, steps)],
+            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, steps)],
+            [(0, -1 * i * np.pi, 0) for i in np.linspace(0, 0.5, steps)]
         ]
-
+        d = 0
         for _ in range(sets):
-            self.set_arm_position(positions[0], (0, 0, 0))
+            self.set_arm_position(positions[d], (0, 0, 0), force_small_motion=False)
             self.calibrate_camera()
             d = self.camera.pick_best_direction()
-            self.run_single_experiment(positions[d], all_angles[d])
+            # d = 0
+            print("Best Direction is ", d)
+            self.set_arm_position(positions[d], (0, 0, 0), force_small_motion=False)
+            self.calibrate_camera()
+            self.run_single_experiment_ik(positions[d], all_angles[d])
 
         self.shutdown()
 
@@ -588,19 +646,26 @@ class RobotHandler:
                 results = pickle.load(f)
 
         eulers = []
+        images = []
+
         for i in range(3):
             rospy.sleep(0.1)
             eulers.append(self.get_current_euler())
+            if self.camera is not None:
+                images.append(self.camera.current_image)
 
         eulers = np.average(eulers, axis=0)
 
         results.append({
             'euler': eulers,
-            'time': rospy.get_time()
+            'time': rospy.get_time(),
+            'images': images,
+            'reference_box': self.camera.reference_box,
+            'expected_variance': self.camera.expected_variance
         })
 
-        with open(self.data_directory + '_sliding_data.pickle', 'rb') as f:
-            results = pickle.load(f)
+        with open(self.data_directory + '_sliding_data.pickle', 'wb') as f:
+            pickle.dump(results, f)
 
         self.camera.has_slid = False
         pass

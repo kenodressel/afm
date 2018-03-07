@@ -5,7 +5,7 @@ from afm.robot import RobotHandler
 r = RobotHandler()
 r.init_moveit()
 r.connect_to_camera()
-# r.connect_to_real_robot()
+r.connect_to_real_robot()
 # r.calibrate_camera()
 r.run_real_experiment()
 # r.reset_arm()
