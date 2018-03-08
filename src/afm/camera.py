@@ -44,17 +44,24 @@ class CameraThread(threading.Thread):
 
     def start_calibration(self):
         # let the camera warm up
-        rospy.sleep(1)
+        rospy.sleep(0.5)
         print('Starting Camera Calibration')
         # set flag
         self.FLAG = 'CALIBRATE'
 
-    def pick_best_direction(self):
+    def get_next_direction(self):
 
         maxima = np.array(self.image_size) - np.max(self.current_box, axis=0)
         minima = np.min(self.current_box, axis=0)
-        directions = [maxima[1], minima[0], minima[1], maxima[0]]
-        return np.argmin(directions)
+        directions = np.array([maxima[1], minima[0], minima[1], maxima[0]])
+        # consider the best two options and make a random choice
+        sorted_dir_index = np.argsort(directions)[:-2]
+        weights = 1.0 / np.array(directions)
+        weights = weights[sorted_dir_index]
+        weights = np.array(weights / sum(weights))
+        print(directions)
+        print(weights)
+        return np.random.choice(sorted_dir_index, 1, p=weights)[0]
 
     def use_color_calibration(self, image):
 
@@ -174,6 +181,7 @@ class CameraThread(threading.Thread):
     def calibrate_edges(self, image):
 
         box = self.get_box_from_image(image)
+        self.current_box = box
 
         # No movement during calibration
         self.has_slid = False
@@ -189,7 +197,7 @@ class CameraThread(threading.Thread):
                 # self.calibration_boxes.append(np.array(sorted_box, dtype=np.uint64))
                 self.calibration_boxes.append(np.array(box, dtype=np.uint64))
 
-            if len(self.calibration_boxes) > 20:
+            if len(self.calibration_boxes) > 5:
                 # min_box = np.min(self.calibration_boxes, axis=0)
                 max_box = np.max(self.calibration_boxes, axis=0)
 
@@ -224,10 +232,10 @@ class CameraThread(threading.Thread):
         normed_distance = np.abs(distances - self.expected_variance)
 
         for d in normed_distance:
-            if d > 10 + self.expected_offset / 1.5:
+            if d > 5 + self.expected_offset / 1.5:
                 corners_reporting_movement += 1
 
-        if sum(normed_distance) > 200:
+        if sum(normed_distance) > 50:
             corners_reporting_movement = 4
 
         self.last_box_positions.append(box)
@@ -238,6 +246,7 @@ class CameraThread(threading.Thread):
             self.last_box_positions.pop(0)
 
         cv2.drawContours(image, [box], -1, 255, 5)
+        cv2.drawContours(image, [np.array(self.reference_box, dtype=np.int)], -1, 127, 5)
 
         # cX, cY = np.int0(np.average(box, axis=0) - np.average(self.reference_box, axis=0))
         # print(cX, cY)
@@ -245,6 +254,7 @@ class CameraThread(threading.Thread):
         # draw the contour and center of the shape on the image
 
         try:
+            cv2.circle(image, (cX, cY), 6, 255, -1)
             cv2.circle(image, (cX, cY), 6, 255, -1)
         except OverflowError:
             pass
