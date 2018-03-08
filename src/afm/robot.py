@@ -1,3 +1,4 @@
+import glob
 import sys
 
 import actionlib
@@ -15,6 +16,7 @@ import os
 from afm.data import RobotData
 from afm.pose_library import PoseLibrary
 from shape_msgs.msg import SolidPrimitive
+
 
 # import moveit_msgs.msg
 # import geometry_msgs.msg
@@ -43,6 +45,7 @@ class RobotHandler:
         self.robot_joint_command = JointAngles()
         self.imu_data = Imu()
         self.data_directory = '/home/keno/data/sliding/' + str(rospy.get_time())
+        self.sliding_data = [[], [], [], []]
 
         self.robot = None
         self.group = None
@@ -576,7 +579,7 @@ class RobotHandler:
         for a in angles:
 
             # angles = self.pose_library.get_closest_pose_to_euler_angle(*a)
-
+            rospy.sleep(0.1)
             if self.camera is not None and self.camera.has_slid:
                 print("SLIDING RECEIVED, STOPPING")
                 # self.group.execute(plan1)
@@ -591,7 +594,7 @@ class RobotHandler:
             if status == 'recalibrate':
                 self.calibrate_camera()
             # allow camera a glimpse
-            rospy.sleep(0.15)
+            rospy.sleep(0.1)
 
             # self.collect_joint_data_and_add_to_library(a)
 
@@ -609,15 +612,16 @@ class RobotHandler:
 
         positions = [[0, 0.35, 0.5], [0, 0.5, 0.4], [0, 0.4, 0.5], [0, 0.5, 0.4]]
 
-        steps = 300
+        steps = 50 # 300
         sets = 100
 
         all_angles = [
-            [(- 1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, steps)],
-            [(0, i * np.pi, 0) for i in np.linspace(0, 0.5, steps)],
-            [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, steps)],
-            [(0, -1 *  i * np.pi, 0) for i in np.linspace(0, 0.5, steps)]
+            [(- 1 * i * np.pi, 0, 0) for i in np.linspace(0.0, 0.375, steps)],
+            [(0, i * np.pi, 0) for i in np.linspace(0.0, 0.5, steps)],
+            [(i * np.pi, 0, 0) for i in np.linspace(0.0, 0.375, steps)],
+            [(0, -1 * i * np.pi, 0) for i in np.linspace(0.0, 0.5, steps)]
         ]
+
         d = 0
         self.set_arm_position(positions[d], (0, 0, 0), force_small_motion=False)
         self.calibrate_camera()
@@ -625,19 +629,26 @@ class RobotHandler:
         for i in range(sets):
             t = rospy.get_time()
             print("Going for Run ", i)
-            d = self.camera.get_next_direction()
+            _, d = self.camera.get_next_direction()
             # d = 0
             print("Best Direction is ", d)
             self.set_arm_position(positions[d], (0, 0, 0), force_small_motion=False)
 
             # just to make sure that we are still going for the right direction
-            if d != self.camera.get_next_direction():
+            directions, _ = self.camera.get_next_direction()
+            if d not in directions:
                 continue
 
             # wait until we are surely in the right position
             self.calibrate_camera()
-            if self.run_single_experiment_ik(positions[d], all_angles[d]) == 'SLIDING':
-                self.collect_sliding_angles(i)
+
+            if len(self.sliding_data[d]) < 25:
+                angles = all_angles[d]
+            else:
+                angles = self.get_angles_for_direction(d)
+
+            if self.run_single_experiment_ik(positions[d], angles) == 'SLIDING':
+                self.collect_sliding_angles(i, d)
                 self.camera.has_slid = False
             print("Set took", rospy.get_time() - t)
         self.shutdown()
@@ -652,7 +663,7 @@ class RobotHandler:
             rospy.sleep(1)
             pass
 
-    def collect_sliding_angles(self, run):
+    def collect_sliding_angles(self, run, direction):
 
         results = []
         eulers = []
@@ -671,8 +682,11 @@ class RobotHandler:
             'time': rospy.get_time(),
             'reference_box': self.camera.reference_box,
             'expected_variance': self.camera.expected_variance,
-            'current_box': self.camera.current_box
+            'current_box': self.camera.current_box,
+            'direction': direction
         })
+
+        self.sliding_data[direction].append(eulers[np.argmax(np.abs(eulers[:-1]))])
 
         print('FOUND EULERS', eulers)
 
@@ -681,6 +695,54 @@ class RobotHandler:
 
         self.camera.has_slid = False
         pass
+
+    def load_previous_sliding_data(self):
+
+        data = []
+
+        for f in glob.glob('/home/keno/data/sliding/*'):
+            with open(f, 'rb') as f:
+                d = pickle.load(f)
+                data += [a['euler'] for a in d]
+
+        mapping = [-2, -1, +2, 1]
+
+        angles = [[], [], [], []]
+        for d in data:
+            # no z axis
+            eulers = d[:-1]
+            d = mapping.index((np.argmax(np.abs(eulers)) + 1) * np.sign(eulers[np.argmax(np.abs(eulers))]))
+            a = eulers[np.argmax(np.abs(eulers))]
+            if d == 1:
+                a = (np.abs(a) + 0.0226892803) * np.sign(a)
+            if d == 3:
+                a = (np.abs(a) - 0.0226892803) * np.sign(a)
+            if d == 2:
+                a = (np.abs(a) + 0.00698132) * np.sign(a)
+            if d == 0:
+                a = (np.abs(a) - 0.00698132) * np.sign(a)
+            angles[d].append(a)
+
+        self.sliding_data = angles
+
+    def get_angles_for_direction(self, direction):
+
+        previous_angles = self.sliding_data[direction]
+
+        avg = np.average(previous_angles)
+        std = np.std(previous_angles)
+
+        bounds = [0.375 * np.pi, 0.5 * np.pi, 0.375 * np.pi, 0.5 * np.pi]
+
+        min_angle = max(0, (np.abs(avg) - std * 3)) * np.sign(avg)
+        max_angle = min(bounds[direction], (np.abs(avg) + std * 3)) * np.sign(avg)
+
+        print("calculated angle range", min_angle * (180 / np.pi), max_angle * (180 / np.pi))
+
+        if direction == 1 or direction == 3:
+            return [(i, 0, 0) for i in np.linspace(min_angle, max_angle, 100)]
+        if direction == 0 or direction == 2:
+            return [(0, i, 0) for i in np.linspace(min_angle, max_angle, 100)]
 
     def shutdown(self):
 

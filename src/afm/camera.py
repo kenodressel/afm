@@ -61,7 +61,7 @@ class CameraThread(threading.Thread):
         weights = np.array(weights / sum(weights))
         print(directions)
         print(weights)
-        return np.random.choice(sorted_dir_index, 1, p=weights)[0]
+        return sorted_dir_index, np.random.choice(sorted_dir_index, 1, p=weights)[0]
 
     def use_color_calibration(self, image):
 
@@ -169,12 +169,9 @@ class CameraThread(threading.Thread):
         # we dont need to reliably match all points. potentially multiple points map to one but
         # then assume 0 for unmapped point. We really want to avoid false positives
 
-        distances = [0, 0, 0, 0]
-
-        for p2 in box2:
-            temp_distances = [np.linalg.norm(p2 - p1) for p1 in box1]
-            closest = np.argmin(temp_distances)
-            distances[closest] = temp_distances[closest]
+        distances = []
+        for p1 in box1:
+            distances.append(min([np.linalg.norm(p1 - p2) for p2 in box2]))
 
         return np.array(distances)
 
@@ -232,11 +229,12 @@ class CameraThread(threading.Thread):
         normed_distance = np.abs(distances - self.expected_variance)
 
         for d in normed_distance:
-            if d > 5 + self.expected_offset / 1.5:
+            if d > 5 + self.expected_offset:
                 corners_reporting_movement += 1
 
-        if sum(normed_distance) > 50:
-            corners_reporting_movement = 4
+        # if sum(normed_distance) > 50 + self.expected_offset * 4:
+        #     print("forcing it")
+        #     corners_reporting_movement = 4
 
         self.last_box_positions.append(box)
 
@@ -265,7 +263,7 @@ class CameraThread(threading.Thread):
         self.pub.publish(self.bridge.cv2_to_imgmsg(image, encoding='8UC1'))
 
         if corners_reporting_movement > 2:
-            # print(np.array(normed_distance, np.uint), corners_reporting_movement)
+            print(np.array(normed_distance, np.uint), corners_reporting_movement, self.expected_offset)
             return True
         else:
             box = np.array(np.average(self.last_box_positions, axis=0), np.uint)
@@ -286,6 +284,10 @@ class CameraThread(threading.Thread):
         np_arr = np.fromstring(camera_data.data, np.uint8)
         image_np = cv2.imdecode(np_arr, cv2.IMREAD_GRAYSCALE)
 
+        if self.FLAG == 'BOX_ONLY':
+            self.current_box = self.get_box_from_image(image_np)
+            return
+
         if self.FLAG == 'CALIBRATE':
             # set initial data for sliding reference
 
@@ -294,7 +296,7 @@ class CameraThread(threading.Thread):
             if self.calibrate_edges(image_np):
                 self.FLAG = 'READY'
                 print('Finished Camera Calibration')
-            pass
+            return
 
         elif self.FLAG == 'READY':
             # check if movement occured and set SLIDING_DETECTED
@@ -305,8 +307,9 @@ class CameraThread(threading.Thread):
             # self.get_box_with_ar(image_np)
             if self.has_cube_moved(image_np):
                 # print("DETECTED SLIDE")
+                self.FLAG = 'BOX_ONLY'
                 self.has_slid = True
-            pass
+            return
 
         elif self.FLAG == 'SHUTDOWN':
             self.join()
