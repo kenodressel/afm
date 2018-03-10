@@ -229,7 +229,7 @@ class CameraThread(threading.Thread):
         normed_distance = np.abs(distances - self.expected_variance)
 
         for d in normed_distance:
-            if d > 5 + self.expected_offset:
+            if d > 10 + self.expected_offset:
                 corners_reporting_movement += 1
 
         # if sum(normed_distance) > 50 + self.expected_offset * 4:
@@ -261,6 +261,7 @@ class CameraThread(threading.Thread):
             # print(box)
 
         self.pub.publish(self.bridge.cv2_to_imgmsg(image, encoding='8UC1'))
+
 
         if corners_reporting_movement > 2:
             print(np.array(normed_distance, np.uint), corners_reporting_movement, self.expected_offset)

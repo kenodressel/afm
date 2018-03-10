@@ -46,7 +46,7 @@ class RobotHandler:
         self.imu_data = Imu()
         self.data_directory = '/home/keno/data/sliding/' + str(rospy.get_time())
         self.sliding_data = [[], [], [], []]
-
+        self.robot_is_moving = False
         self.robot = None
         self.group = None
 
@@ -64,6 +64,7 @@ class RobotHandler:
         self.robot_pose = robot_pose
 
     def receive_joint_state(self, robot_joint_state):
+        self.robot_is_moving = sum(np.abs(robot_joint_state.velocity)) > 0.1
         self.robot_joint_state = robot_joint_state
 
     def receive_joint_command(self, robot_joint_angles):
@@ -165,7 +166,24 @@ class RobotHandler:
                     else:
                         raise ArithmeticError('Could not find appropriate planning solution')
 
-        self.group.execute(plan, wait=True)
+        self.group.execute(plan, wait=False)
+
+        # in case we fuck something up, we need a safety net
+        start = rospy.get_time()
+        threshold = 0.5
+        if not self.robot_is_moving:
+            while not self.robot_is_moving and not rospy.is_shutdown():
+                rospy.sleep(0.01)
+                if rospy.get_time() - start > threshold:
+                    print("break1")
+                    break
+
+        while self.robot_is_moving and not rospy.is_shutdown():
+            rospy.sleep(0.01)
+            if rospy.get_time() - start > threshold + 10:
+                print("break2")
+                break
+
         self.group.clear_pose_targets()
 
         if plan_dist > 2 and force_small_motion:
@@ -612,7 +630,7 @@ class RobotHandler:
 
         positions = [[0, 0.35, 0.5], [0, 0.5, 0.4], [0, 0.4, 0.5], [0, 0.5, 0.4]]
 
-        steps = 50 # 300
+        steps = 50  # 300
         sets = 100
 
         all_angles = [
@@ -651,6 +669,11 @@ class RobotHandler:
                 self.collect_sliding_angles(i, d)
                 self.camera.has_slid = False
             print("Set took", rospy.get_time() - t)
+
+
+        self.set_arm_position(positions[d], (0, 0, 0), force_small_motion=False)
+        self.calibrate_camera()
+
         self.shutdown()
 
     def calibrate_camera(self):
@@ -737,12 +760,13 @@ class RobotHandler:
         min_angle = max(0, (np.abs(avg) - std * 3)) * np.sign(avg)
         max_angle = min(bounds[direction], (np.abs(avg) + std * 3)) * np.sign(avg)
 
-        print("calculated angle range", min_angle * (180 / np.pi), max_angle * (180 / np.pi))
+        print("calculated angle range", direction, min_angle * (180 / np.pi), max_angle * (180 / np.pi))
 
-        if direction == 1 or direction == 3:
-            return [(i, 0, 0) for i in np.linspace(min_angle, max_angle, 100)]
         if direction == 0 or direction == 2:
-            return [(0, i, 0) for i in np.linspace(min_angle, max_angle, 100)]
+            # for some reason this direction has to be flipped
+            return [(i, 0, 0) for i in np.linspace(min_angle, max_angle, 50)]
+        if direction == 1 or direction == 3:
+            return [(0, i, 0) for i in np.linspace(min_angle * -1, max_angle * -1, 50)]
 
     def shutdown(self):
 
