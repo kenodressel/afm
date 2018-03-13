@@ -61,6 +61,7 @@ class CameraThread(threading.Thread):
         weights = np.array(weights / sum(weights))
         print(directions)
         print(weights)
+        print(sorted_dir_index)
         return sorted_dir_index, np.random.choice(sorted_dir_index, 1, p=weights)[0]
 
     def use_color_calibration(self, image):

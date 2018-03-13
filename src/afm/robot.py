@@ -47,8 +47,10 @@ class RobotHandler:
         self.data_directory = '/home/keno/data/sliding/' + str(rospy.get_time())
         self.sliding_data = [[], [], [], []]
         self.robot_is_moving = False
+        self.robot_has_moved = False
         self.robot = None
         self.group = None
+        self.plan_stats = []
 
         # pose library
         self.pose_library = PoseLibrary('/home/keno/pose_lib.pickle')
@@ -64,7 +66,9 @@ class RobotHandler:
         self.robot_pose = robot_pose
 
     def receive_joint_state(self, robot_joint_state):
-        self.robot_is_moving = sum(np.abs(robot_joint_state.velocity)) > 0.1
+        self.robot_is_moving = sum(np.abs(robot_joint_state.velocity)) > 0.05
+        if self.robot_is_moving:
+            self.robot_has_moved = True
         self.robot_joint_state = robot_joint_state
 
     def receive_joint_command(self, robot_joint_angles):
@@ -171,7 +175,7 @@ class RobotHandler:
         # in case we fuck something up, we need a safety net
         start = rospy.get_time()
         threshold = 0.5
-        if not self.robot_is_moving:
+        if not self.robot_is_moving and not self.robot_has_moved:
             while not self.robot_is_moving and not rospy.is_shutdown():
                 rospy.sleep(0.01)
                 if rospy.get_time() - start > threshold:
@@ -183,6 +187,15 @@ class RobotHandler:
             if rospy.get_time() - start > threshold + 10:
                 print("break2")
                 break
+
+        # collect stats
+        self.plan_stats.append({
+            'plans': plans,
+            'distances': distances
+        })
+
+        if self.robot_has_moved:
+            self.robot_has_moved = False
 
         self.group.clear_pose_targets()
 
@@ -631,7 +644,7 @@ class RobotHandler:
         positions = [[0, 0.35, 0.5], [0, 0.5, 0.4], [0, 0.4, 0.5], [0, 0.5, 0.4]]
 
         steps = 50  # 300
-        sets = 100
+        sets = 2000
 
         all_angles = [
             [(- 1 * i * np.pi, 0, 0) for i in np.linspace(0.0, 0.375, steps)],
@@ -669,6 +682,8 @@ class RobotHandler:
                 self.collect_sliding_angles(i, d)
                 self.camera.has_slid = False
             print("Set took", rospy.get_time() - t)
+            # with open(self.data_directory + '_stats_pickle.plans', 'wb') as f:
+            #     pickle.dump(self.plan_stats, f)
 
 
         self.set_arm_position(positions[d], (0, 0, 0), force_small_motion=False)
@@ -723,7 +738,7 @@ class RobotHandler:
 
         data = []
 
-        for f in glob.glob('/home/keno/data/sliding/*'):
+        for f in glob.glob('/home/keno/data/sliding/*.pickle'):
             with open(f, 'rb') as f:
                 d = pickle.load(f)
                 data += [a['euler'] for a in d]
