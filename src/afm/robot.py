@@ -24,34 +24,50 @@ def norm_q(q):
 
 
 class RobotHandler:
-
+    """
+    This is the main class of the robot controller
+    It contains all methods and takes care of the camera handling (via a thread)
+    """
     def __init__(self):
-
-        print("============ started robot init")
 
         # currently required minimum initialization
         rospy.init_node('afm', anonymous=True)
 
-        self.camera = None
+        rospy.loginfo("Started Robot Init")
+
+        # Status variables
         self.REAL_ROBOT_CONNECTED = False
         self.IMU_CONNTECTED = False
+
+        # Callback Data holders
         self.robot_pose = PoseStamped()
         self.robot_joint_state = JointState()
         self.robot_joint_angles = JointAngles()
         self.robot_joint_command = JointAngles()
         self.imu_data = Imu()
+
+        # Set data directory (including file prefix)
         self.data_directory = '/home/keno/data/sliding/' + str(rospy.get_time())
+
+        # Previously recorded angles
         self.sliding_data = [[], [], [], []]
+
+        # State descriptors
         self.robot_is_moving = False
         self.robot_has_moved = False
+
+        # Create variables
+        self.camera = None
         self.robot = None
         self.group = None
+
+        # Statistics about the plans
         self.plan_stats = []
 
         # pose library
         self.pose_library = PoseLibrary('/home/keno/pose_lib.pickle')
 
-        print("============ robot init successful")
+        rospy.loginfo("Robot Init Successful")
 
         pass
 
@@ -195,7 +211,7 @@ class RobotHandler:
 
         self.group.clear_pose_targets()
 
-        if plan_dist > 2 and force_small_motion:
+        if plan_dist > 1 and force_small_motion:
             return 'recalibrate', pose_target
         return 'default', pose_target
 
