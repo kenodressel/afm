@@ -1,14 +1,13 @@
 import glob
 import sys
 
-import actionlib
 import rospy
 import numpy as np
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState, Imu
-from kinova_msgs.msg import JointAngles, ArmJointAnglesGoal, ArmJointAnglesAction
+from kinova_msgs.msg import JointAngles
 from afm.camera import CameraThread
 import moveit_commander
 import pickle
