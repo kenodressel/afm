@@ -9,28 +9,49 @@ import time
 from sensor_msgs.msg import Image
 import cv_bridge
 
+"""
+Camera Thread
+This class contains all camera related code. It receives the image from the camera, processes it and detects movements.
+"""
+
 
 class CameraThread(threading.Thread):
 
     def __init__(self):
+        # Required init function for threads
         super(CameraThread, self).__init__()
+
+        # This flag sets the current action, more about this in has_cube_moved()
         self.FLAG = 'IGNORE'
+
+        # This will be set true when a movement is detected
         self.has_slid = False
+
+        # The position of each corner for the currently detected box
         self.current_box = [(0, 0), (0, 0), (0, 0), (0, 0)]
+
+        # The current image, saved for analytical purposes
         self.current_image = np.array([])
+
+        # The size of the incoming camera feed
         self.image_size = (0, 0)
+
+        # A correction for the offset due to gravitational forces
         self.expected_offset = 0
-        # stats
+
+        # Statistics
+        # Some general statistics to analyse the performacne of the code.
+        # Not really reliable as this only counts frames that are actually processed when the thread is not blocked.
+        # So it works for benchmarking the analysis code but not for the camera feed. Here ROS tools like
+        # rostopic info /topic_name should be used
         self.frame_count = 0
         self.start_time = 0
         self.last_time = 0
-        # debug view
+
+        # Initializing the publisher for the processed image
         self.bridge = cv_bridge.CvBridge()
         self.pub = rospy.Publisher('/afm/processed_image', Image, queue_size=5)
-        # color calibration
-        self.calibration_range = []
-        self.cube_colors = (-1, -1)
-        self.last_frame = np.array([])
+
         # edge calibration
         self.last_box_positions = []
         self.calibration_boxes = []
@@ -63,57 +84,6 @@ class CameraThread(threading.Thread):
         print(weights)
         print(sorted_dir_index)
         return sorted_dir_index, np.random.choice(sorted_dir_index, 1, p=weights)[0]
-
-    def use_color_calibration(self, image):
-
-        x, y = image.shape
-        s = 30  # size
-
-        calibration_spot = image[x / 2 - s:x / 2 + s, y / 2 - s:y / 2 + s].copy()
-        cv2.rectangle(image, (y / 2 + s, x / 2 + s), (y / 2 - s, x / 2 - s), 255, 2)
-
-        calibration_spot_f32 = image[x / 2 - s:x / 2 + s, y / 2 - s:y / 2 + s].astype(np.float32)
-        # Define criteria = ( type, max_iter = 10 , epsilon = 1.0 )
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-
-        # Set flags (Just to avoid line break in the code)
-        flags = cv2.KMEANS_RANDOM_CENTERS
-
-        # Apply KMeans
-        compactness, labels, centers = cv2.kmeans(calibration_spot_f32.reshape((-1, 1)), 2, criteria, 1, flags)
-        label_img = np.array(labels).reshape((s * 2, s * 2)).astype(np.uint8) * 255
-        # image_np[x/2 - s:x/2 + s, y/2 - s:y/2 + s] = label_img
-
-        self.pub.publish(self.bridge.cv2_to_imgmsg(image, encoding='8UC1'))
-        print("Ratio: " + str(float(sum(labels)) / len(labels)))
-        if float(sum(labels)) / len(labels) > 0.7:
-            # 1 is dominant
-            points_in_cube = [p for i, p in enumerate(calibration_spot.reshape(-1)) if labels[i] == 1]
-            pass
-        elif float(sum(labels)) / len(labels) < 0.3:
-            points_in_cube = [p for i, p in enumerate(calibration_spot.reshape(-1)) if labels[i] == 0]
-            pass
-
-        else:
-            print("Could not properly find one dominant color. Please try to stay in the square!")
-            return
-
-        counts = {u: points_in_cube.count(u) for u in set(points_in_cube)}
-
-        # TODO work with counts to ignore color range outliers
-
-        print([np.min(points_in_cube), np.max(points_in_cube)])
-        self.calibration_range.append([np.min(points_in_cube), np.max(points_in_cube)])
-
-        max_frames = 100
-        print("Calibration: " + str(self.frame_count * 100 / max_frames) + "%")
-
-        if len(self.calibration_range) > max_frames:
-            # collected enough data
-
-            self.cube_colors = np.average(self.calibration_range, axis=0)
-            print(self.cube_colors)
-            self.FLAG = 'READY'
 
     def get_box_from_image(self, image):
 
@@ -263,7 +233,6 @@ class CameraThread(threading.Thread):
 
         self.pub.publish(self.bridge.cv2_to_imgmsg(image, encoding='8UC1'))
 
-
         if corners_reporting_movement > 2:
             print(np.array(normed_distance, np.uint), corners_reporting_movement, self.expected_offset)
             return True
@@ -293,7 +262,6 @@ class CameraThread(threading.Thread):
         if self.FLAG == 'CALIBRATE':
             # set initial data for sliding reference
 
-            # self.use_color_calibration(image_np)
             self.image_size = image_np.shape
             if self.calibrate_edges(image_np):
                 self.FLAG = 'READY'
