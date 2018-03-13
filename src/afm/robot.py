@@ -158,7 +158,7 @@ class RobotHandler:
         return real_euler
 
     def get_difference(self, planned_q, planned_coord):
-        # type: (np.array, np.array) -> Tuple[np.array, np.array]
+        # type: (np.array, np.array) -> tuple[np.array, np.array]
         """
         Debugging method used to get live pose error
         :param planned_q: Planned quaternion angles
@@ -179,10 +179,20 @@ class RobotHandler:
         return difference_position, difference_euler
 
     def set_arm_position(self, position, euler, force_small_motion=False):
+        # type: (list or np.array, list or np.array, bool) -> tuple[str, Pose]
+        """
+        Takes angles and position and guides robot to correct position using inverse kinematics
+        :param position: list of cartesian coordinates (XYZ)
+        :param euler: lsit of euler angles (XYZ)
+        :param force_small_motion: True to throw an error if no small motion is possible
+        """
+        # convert euler to quaternion
         orientation = quaternion_from_euler(*euler)
 
+        # create empty target pose
         pose_target = Pose()
 
+        # set pose to desired target
         pose_target.orientation.x = orientation[0]
         pose_target.orientation.y = orientation[1]
         pose_target.orientation.z = orientation[2]
@@ -191,56 +201,79 @@ class RobotHandler:
         pose_target.position.y = position[1]
         pose_target.position.z = position[2]
 
+        # pass target pose to inverse kinematics
         self.group.set_pose_target(pose_target)
+
+        # the planning distances is 100 to make sure we run at least one iteration of the while loop
         plan_dist = 100
+
+        # run counter
         runs = 0
+
+        # threshold (value got from experience)
         threshold = 2
 
+        # empty arrays for stats collection and final choice of plan
         plans = []
         distances = []
 
+        # iterate while distance of calcualted plan is too high
         while plan_dist > threshold:
+            # use inverse kinematics to obtain a plan
             plan = self.group.plan()
+            # extract all intermediate points from a plan
             points = plan.joint_trajectory.points
+            # extract all positions in a list
             positions = [p.positions for p in points]
+            # calculate distance between previous and current point
             dist = [np.linalg.norm(np.array(p) - np.array(positions[i - 1])) for i, p in enumerate(positions)]
+            # sum to obtain total travel distance
             plan_dist = sum(dist[1:])
+
+            # gather some data
             runs += 1
             plans.append(plan)
             distances.append(plan_dist)
-            if runs > 1:
-                print(plan_dist, threshold)
 
-            if not force_small_motion:
-                if len(plans) > 49:
-                    plan = plans[np.argmin(distances)]
-                    plan_dist = np.min(distances)
-                    break
-            else:
-                if len(plans) > 49:
-                    plan_dist = np.min(distances)
-                    if plan_dist < 5:
-                        plan = plans[np.argmin(distances)]
-                        break
-                    else:
-                        raise ArithmeticError('Could not find appropriate planning solution')
+            # if we have enough plans we can assume we got a good one
+            if len(plans) > 49:
+                # get the best plan
+                plan = plans[np.argmin(distances)]
+                # including its distance
+                plan_dist = np.min(distances)
 
+                # if we still have not found a good plan, raise an exception
+                if plan_dist > 5 and force_small_motion:
+                    raise ArithmeticError('Could not find appropriate planning solution')
+
+                # otherwise break the loop
+                break
+
+        # we execute the best plan we found (in async)
         self.group.execute(plan, wait=False)
 
-        # in case we fuck something up, we need a safety net
+        # this is a hack to keep the thread running while the robot moves
+        # capture the start time
         start = rospy.get_time()
+        # first threshold to wait until the robot starts moving (usually it has already moved by this time)
         threshold = 0.5
+        # assuming the robot did not move before and its not moving now, wait for the robot to move or until the threshold
+        # is reached
         if not self.robot_is_moving and not self.robot_has_moved:
             while not self.robot_is_moving and not rospy.is_shutdown():
+                # this allows the camera to work through frames
                 rospy.sleep(0.01)
                 if rospy.get_time() - start > threshold:
-                    print("break1")
+                    rospy.loginfo("Ran into timeout for waiting until the robot moves. Assuming the motion was missed.")
                     break
 
+        # here it can be assumed that we are moving
         while self.robot_is_moving and not rospy.is_shutdown():
+            # this allows the camera to work through frames
             rospy.sleep(0.01)
+            # the threshold here is 10 seconds. The robot is expected to never move more than 10 seconds.
             if rospy.get_time() - start > threshold + 10:
-                print("break2")
+                rospy.logwarn("Ran into timeout for waiting while the robot moves. Assuming the motion is stuck.")
                 break
 
         # collect stats
@@ -249,13 +282,19 @@ class RobotHandler:
             'distances': distances
         })
 
+        # reset robot state
         if self.robot_has_moved:
             self.robot_has_moved = False
 
+        # clear the ik targets
         self.group.clear_pose_targets()
 
+        # if the robot got a bigger motion than expected
+        # it forces the system to recalibrate itself after the motion
         if plan_dist > 1 and force_small_motion:
             return 'recalibrate', pose_target
+
+        # otherwise just return the normal state
         return 'default', pose_target
 
     def collect_pose_data(self, dir_path, index):
