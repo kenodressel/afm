@@ -27,7 +27,6 @@ class RobotHandler:
     """
 
     def __init__(self):
-
         # currently required minimum initialization
         rospy.init_node('afm', anonymous=True)
 
@@ -66,71 +65,120 @@ class RobotHandler:
 
         pass
 
-    def spin(self):
+    @staticmethod
+    def spin():
+        # type: () -> None
+        """
+        For debug only. Runs the spin command to frequently receive updates for all topics
+        """
         rospy.spin()
+        pass
 
     def receive_pose_data(self, robot_pose):
+        # type: (PoseStamped) -> None
+        """
+        Callback for /j2n6s300_driver/out/tool_pose
+        :param robot_pose: Data from Publisher
+        """
         self.robot_pose = robot_pose
+        pass
 
     def receive_joint_state(self, robot_joint_state):
+        # type: (JointState) -> None
+        """
+        Callback for /j2n6s300_driver/out/joint_state. Also determines if the robot is moving
+        :param robot_joint_state: Data from Publisher
+        """
+        # If the sum of all joint velocities is over a threshold the robot state will be determined as moving
         self.robot_is_moving = sum(np.abs(robot_joint_state.velocity)) > 0.07
+
+        # once we detected a movement, set a flag
         if self.robot_is_moving:
             self.robot_has_moved = True
+        # Save joints tate to robot
         self.robot_joint_state = robot_joint_state
 
     def receive_joint_command(self, robot_joint_angles):
+        # type: (JointAngles) -> None
+        """
+        Callback for /j2n6s300_driver/out/joint_angles
+        :param robot_joint_angles: Data from Publisher
+        """
         self.robot_joint_angles = robot_joint_angles
+        pass
 
     def receive_joint_angles(self, robot_joint_command):
+        # type: (JointAngles) -> None
+        """
+        Callback for /j2n6s300_driver/out/joint_command
+        :param robot_joint_command: Data from Publisher
+        """
         self.robot_joint_command = robot_joint_command
+        pass
 
     def receive_imu_data(self, imu_data):
+        # type: (Imu) -> None
+        """
+        Callback for /mavros/imu/data
+        :param imu_data: Data from Publisher
+        """
         self.imu_data = imu_data
+        pass
 
     def set_camera_flag(self, state):
+        # type: (str) -> None
+        """
+        Sets the camera flag.
+        :param state: String in CAPS declaring the state
+        """
+        # TODO check if status is allowed
         self.camera.FLAG = state
+        pass
 
     def init_moveit(self):
+        # type: () -> None
+        """
+        Initializes the inverse kinematics system. Required if inverse kinematics or the simulation is going to be used
+        """
         moveit_commander.roscpp_initialize(sys.argv)
         self.robot = moveit_commander.RobotCommander()
         self.group = moveit_commander.MoveGroupCommander("arm")
+
+        # this sets the allowed goal error for planning to 1/10 of the original threshold
         self.group.set_goal_orientation_tolerance(0.0001)
+        pass
 
     def get_current_euler(self):
+        # type: () -> np.array
+        """
+        Takes current pose and returns euler angles
+        """
         real_q = self.robot_pose.pose.orientation
         real_euler = euler_from_quaternion(np.array([real_q.x, real_q.y, real_q.z, real_q.w]))
-
-        # do some remapping
-        # real_euler = np.array([real_euler[1], real_euler[0] * -1, real_euler[2] + 1.57])
         return real_euler
 
     def get_difference(self, planned_q, planned_coord):
-        # temp
-        # print(planned_coord, planned_q)
+        # type: (np.array, np.array) -> Tuple[np.array, np.array]
+        """
+        Debugging method used to get live pose error
+        :param planned_q: Planned quaternion angles
+        :param planned_coord: Planned cartesian coordinates
+        """
 
+        # gather real data from the current states
         real_euler = self.get_current_euler()
         real_position = self.robot_pose.pose.position
 
+        # get difference in position
         difference_position = np.array([real_position.x, real_position.y, real_position.z]) - np.array(planned_coord)
 
-        print(difference_position)
-
-        # EULER
+        # get difference in euler
         planned_euler = np.array(euler_from_quaternion(planned_q))
         difference_euler = np.array(real_euler - planned_euler)
-        print(difference_euler)
-        # collect difference in qaternion as well
 
-        return difference_position, difference_euler  # , difference_quanternion
-
-    def reset_arm(self):
-
-        position = [0, 0.6, 0.5]
-
-        self.set_arm_position(position, (0, 0, 0))
+        return difference_position, difference_euler
 
     def set_arm_position(self, position, euler, force_small_motion=False):
-
         orientation = quaternion_from_euler(*euler)
 
         pose_target = Pose()
@@ -211,7 +259,6 @@ class RobotHandler:
         return 'default', pose_target
 
     def collect_pose_data(self, dir_path, index):
-
         a = index
         collected_data = self.wait_for_data(a)
 
@@ -222,7 +269,6 @@ class RobotHandler:
             print('Finished Data Collection')
 
     def wait_for_data(self, a, planned_pose=None, amount=50):
-
         if not self.REAL_ROBOT_CONNECTED:
             raise EnvironmentError('Connect a real robot to gather data.')
 
@@ -359,7 +405,6 @@ class RobotHandler:
             # do it in 5 degree steps for + / - 90 degrees in both directions
 
     def connect_to_camera(self):
-
         topics = [name for (name, _) in rospy.get_published_topics()]
 
         if '/raspicam_node/image/compressed' in topics:
@@ -372,7 +417,6 @@ class RobotHandler:
             print("============ COULD NOT find camera, running blind")
 
     def connect_to_real_robot(self):
-
         topics = [name for (name, _) in rospy.get_published_topics()]
 
         if '/j2n6s300_driver/out/tool_pose' in topics:
@@ -398,7 +442,6 @@ class RobotHandler:
             print("============ COULD NOT find real robot")
 
     def run_single_experiment_ik(self, position, angles):
-
         print("============ Rotating arm")
 
         for a in angles:
@@ -428,7 +471,6 @@ class RobotHandler:
         return "DONE"
 
     def run_real_experiment(self):
-
         # self.camera = []
         if not self.REAL_ROBOT_CONNECTED or self.camera is None:
             raise EnvironmentError('Camera or Robot not connected')
@@ -494,7 +536,6 @@ class RobotHandler:
             pass
 
     def collect_sliding_angles(self, run, direction):
-
         results = []
         eulers = []
         images = []
@@ -527,7 +568,6 @@ class RobotHandler:
         pass
 
     def load_previous_sliding_data(self):
-
         data = []
 
         for f in glob.glob('/home/keno/data/sliding/*.pickle'):
@@ -548,7 +588,6 @@ class RobotHandler:
         self.sliding_data = angles
 
     def get_angles_for_direction(self, direction):
-
         previous_angles = self.sliding_data[direction]
 
         avg = np.average(previous_angles)
@@ -568,7 +607,6 @@ class RobotHandler:
             return [(0, i, 0) for i in np.linspace(min_angle * -1, max_angle * -1, 50)]
 
     def shutdown(self):
-
         print("============ WAITING ON CAMERA FOR SHUTDOWN")
         # self.set_camera_flag('SHUTDOWN')
         if self.camera is not None:
