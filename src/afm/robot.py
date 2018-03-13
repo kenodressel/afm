@@ -560,14 +560,6 @@ class RobotHandler:
             eulers = d[:-1]
             d = mapping.index((np.argmax(np.abs(eulers)) + 1) * np.sign(eulers[np.argmax(np.abs(eulers))]))
             a = eulers[np.argmax(np.abs(eulers))]
-            if d == 1:
-                a = (np.abs(a) + 0.0226892803) * np.sign(a)
-            if d == 3:
-                a = (np.abs(a) - 0.0226892803) * np.sign(a)
-            if d == 2:
-                a = (np.abs(a) + 0.00698132) * np.sign(a)
-            if d == 0:
-                a = (np.abs(a) - 0.00698132) * np.sign(a)
             angles[d].append(a)
 
         self.sliding_data = angles
