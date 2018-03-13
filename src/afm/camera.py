@@ -9,13 +9,12 @@ import time
 from sensor_msgs.msg import Image
 import cv_bridge
 
-"""
-Camera Thread
-This class contains all camera related code. It receives the image from the camera, processes it and detects movements.
-"""
-
 
 class CameraThread(threading.Thread):
+    """
+    Camera Thread
+    This class contains all camera related code. It receives the image from the camera, processes it and detects movements.
+    """
 
     def __init__(self):
         # Required init function for threads

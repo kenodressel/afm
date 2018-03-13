@@ -17,10 +17,6 @@ from afm.data import RobotData
 from afm.pose_library import PoseLibrary
 from shape_msgs.msg import SolidPrimitive
 
-
-# import moveit_msgs.msg
-# import geometry_msgs.msg
-
 def norm_q(q):
     a, b, c, d = q
     Z = np.sqrt(a ** 2 + b ** 2 + c ** 2 + d ** 2)
