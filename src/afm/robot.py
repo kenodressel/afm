@@ -66,7 +66,7 @@ class RobotHandler:
         self.robot_pose = robot_pose
 
     def receive_joint_state(self, robot_joint_state):
-        self.robot_is_moving = sum(np.abs(robot_joint_state.velocity)) > 0.05
+        self.robot_is_moving = sum(np.abs(robot_joint_state.velocity)) > 0.07
         if self.robot_is_moving:
             self.robot_has_moved = True
         self.robot_joint_state = robot_joint_state

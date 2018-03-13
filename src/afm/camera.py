@@ -52,7 +52,7 @@ class CameraThread(threading.Thread):
         self.bridge = cv_bridge.CvBridge()
         self.pub = rospy.Publisher('/afm/processed_image', Image, queue_size=5)
 
-        # edge calibration
+        # Some edge calibration related variables
         self.last_box_positions = []
         self.calibration_boxes = []
         self.expected_variance = []
@@ -60,86 +60,128 @@ class CameraThread(threading.Thread):
         pass
 
     def run(self):
+        # type: () -> None
+        """
+        Subscribe to the incoming camera feed. This can be adjusted to any topic and (image) type.
+
+        The method is also immediately executed when a new CameraThread is started.
+        The rospy.spin() is most likely not necessary as the main process will take care of reading the data from the roscore
+        but I could not bring myself to take it out and it does no harm.
+        """
         rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, self.receive_camera_data)
         rospy.spin()
-
-    def start_calibration(self):
-        # let the camera warm up
-        rospy.sleep(0.5)
-        print('Starting Camera Calibration')
-        # set flag
-        self.FLAG = 'CALIBRATE'
+        pass
 
     def get_next_direction(self):
-
+        # type: () -> Tuple[list, int]
+        """
+        Provides the next movement direction for the robotic arm based on the relative position of the detected cube.
+        """
+        # relative distance from the bottom and right hand side
         maxima = np.array(self.image_size) - np.max(self.current_box, axis=0)
+        # relative distance from the top and left hand side
         minima = np.min(self.current_box, axis=0)
+
+        # the arrangement in this list depends on the mounting orientation of the camera on the robot.
         directions = np.array([maxima[1], minima[0], minima[1], maxima[0]])
-        # consider the best two options and make a random choice
+
+        # consider the best two options based on shortest distance from border
         sorted_dir_index = np.argsort(directions)[:-2]
+
+        # weights have an inverse relation to distances (shorter is better)
         weights = 1.0 / np.array(directions)
+
+        # only consider weights that are relevant
         weights = weights[sorted_dir_index]
+
+        # normalize weights
         weights = np.array(weights / sum(weights))
-        print(directions)
-        print(weights)
-        print(sorted_dir_index)
+
+        # Log some debug info
+        rospy.loginfo(directions)
+        rospy.loginfo(weights)
+        rospy.loginfo(sorted_dir_index)
+
+        # return the indexes of the two best options and a random choice with the weights
         return sorted_dir_index, np.random.choice(sorted_dir_index, 1, p=weights)[0]
 
+    def start_calibration(self):
+        # type: () -> None
+        """
+        Starting the calibration after a short delay to make sure the camera has been properly loaded
+        and the first images are in.
+        """
+        self.get_next_direction()
+        # let the camera warm up
+        rospy.sleep(0.5)
+        rospy.loginfo('Starting Camera Calibration')
+        # set flag
+        self.FLAG = 'CALIBRATE'
+        pass
+
     def get_box_from_image(self, image):
-
+        # type: (np.array) -> np.array
+        """
+        Takes image and returns most likely box corners
+        :param image: Raw, grayscale image
+        """
+        # applies a simple binary threshold (less than 30 --> white else black)
         ret, thresh = cv2.threshold(image, 30, 255, cv2.THRESH_BINARY_INV)
-        # self.pub.publish(self.bridge.cv2_to_imgmsg(thresh, encoding='8UC1'))
 
-        # edges = cv2.Canny(image, 50, 100)
-
-        # actually useful stuff
-        # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-        # dilated = cv2.dilate(edges, kernel, iterations=2)
-        # thresh = dilated
-
-        # not used
-        # dilated = cv2.morphologyEx(dilated, cv2.MORPH_OPEN, np.ones((3, 3)), iterations=5)
-        # thresh = cv2.morphologyEx(dilated, cv2.MORPH_CLOSE, kernel, iterations=8)
-
+        # use the image to find the EXTERNAL contours of anything in the image
         _, cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        blank = np.zeros_like(image)
+        # if there are no contours its okay for a frame or two so just skip
+        if len(cnts) == 0:
+            return None
 
+        # get the first contour (there is usually only one)
         c = cnts[0]
 
+        # if there are actually more, find the biggest one.
+        # TODO pick the one that is actually clostest to the last frame
         if len(cnts) > 1:
+            # sort by contour area
             sorted_cnt = sorted(cnts, key=cv2.contourArea, reverse=True)
             c = sorted_cnt[0]
 
+        # fit a rectangle around the found contour
         rect = cv2.minAreaRect(c)
 
-        # cv2.drawContours(blank, c, -1, 255, 5)
+        # instead of using the full curve we are only interested in getting the corner points
         box_points = cv2.boxPoints(rect)
+
+        # there might be some out of bound corners, this replaces the values with either 0 or the max value
+        # only works on square images
         corner_issues = 0
         for i, p in enumerate(box_points):
+            # bigger than max? replace with max image size
             while max(p) > max(self.image_size):
-                # out of bounds, so we need a new plan
                 box_points[i][np.argmax(p)] = max(self.image_size)
-
                 corner_issues += 1
-
+            # smaller than min? replace with 0
             while min(p) < 0:
-                # out of bounds, so we need a new plan
                 box_points[i][np.argmin(p)] = 0
                 corner_issues += 1
 
+        # warn user we got some out of bound corners and had to correct hem
         if corner_issues > 1:
-            print('Corners off bounds: ' + str(corner_issues))
-            print('Sending new distances' + str(box_points))
+            rospy.logwarn('Corners off bounds: ' + str(corner_issues))
+            rospy.logwarn('Sending new distances' + str(box_points))
 
         return np.array(box_points, dtype=np.int)
 
-    def get_distances_between_boxes(self, box1, box2):
+    @staticmethod
+    def get_distances_between_boxes(box1, box2):
+        # type: (np.array, np.array) -> np.array
+        """
+        Simple distance function between two boxes.
 
-        # not perfect but since we can expect multiple corners to move a significant amount
-        # we dont need to reliably match all points. potentially multiple points map to one but
-        # then assume 0 for unmapped point. We really want to avoid false positives
-
+        Its a conservative estimate as it looks at the minimum distance between the corner1 of box1 and corners1-4 of box2.
+        This is a lower bound to the distance traveled. It helps to avoid false positives.
+        :param box1: First box to compare
+        :param box2: Second box to compare against
+        """
         distances = []
         for p1 in box1:
             distances.append(min([np.linalg.norm(p1 - p2) for p2 in box2]))
@@ -147,136 +189,147 @@ class CameraThread(threading.Thread):
         return np.array(distances)
 
     def calibrate_edges(self, image):
-
+        # type: (np.array) -> bool
+        """
+        Used to save the current box into self.reference_box
+        Checks the variance of the box over a couple frames and if the variance is below a threshold it returns True
+        while it is still calibrating returns False
+        :param image: a raw np.array of pixles
+        """
+        # obtain current box
         box = self.get_box_from_image(image)
+
+        # save box (for statistical use)
         self.current_box = box
 
-        # No movement during calibration
+        # there can be no "sliding" while calibration
         self.has_slid = False
 
+        # only take boxes with 4 corners
         if len(box) == 4:
-            if len(self.calibration_boxes) == 0:
-                self.calibration_boxes.append(np.array([np.array(c) for c in box]))
-            else:
-                # sorted_box = [None, None, None, None]
-                # for p in box:
-                #     closest = np.argmin([np.linalg.norm(p - p_o) for p_o in self.calibration_boxes[0]])
-                #     sorted_box[closest] = p
-                # self.calibration_boxes.append(np.array(sorted_box, dtype=np.uint64))
-                self.calibration_boxes.append(np.array(box, dtype=np.uint64))
+            # append box to calibration boxes
+            self.calibration_boxes.append(np.array(box, dtype=np.uint64))
 
+            # after gathering 5 frames with boxes look into the variance
             if len(self.calibration_boxes) > 5:
-                # min_box = np.min(self.calibration_boxes, axis=0)
-                max_box = np.max(self.calibration_boxes, axis=0)
 
+                # calculate average box and expected variance
                 self.reference_box = np.average(self.calibration_boxes, axis=0)
                 self.expected_variance = np.sum(np.std(self.calibration_boxes, axis=0), axis=1)
 
-                print(self.reference_box)
-                print(self.expected_variance)
-
-                # reset old variables
+                # Reset saved boxes
                 self.calibration_boxes = []
 
+                # If the variance of the sample
                 if sum(self.expected_variance) > 120:
                     # the variance is too high, need lower variance
                     return False
 
                 return True
         else:
-            print("No Cube detected. Please put the cube on the surface.")
+            rospy.logwarn("No Cube detected. Please put the cube on the surface.")
 
         return False
 
     def has_cube_moved(self, image):
+        # type: (np.array) -> bool
+        """
+        Detects movement of the current box relative to the reference_box
+        :param image: np.array of (grayscale) pixels
+        """
+        # variables
+        corners_reporting_movement = 0
 
+        # get current box
         box = self.get_box_from_image(image)
+
+        # save current box and image for analysis purposes
         self.current_box = box
         self.current_image = image
 
-        corners_reporting_movement = 0
-
+        # obtain distance of current box to reference box
         distances = self.get_distances_between_boxes(self.reference_box, box)
+
+        # remove the expected variance from the difference between the boxes
         normed_distance = np.abs(distances - self.expected_variance)
 
+        # for each corner check if a movement has occured
         for d in normed_distance:
+            # the 10 is just a evaluated threshold
+            # the expected_offset comes from the robot function
+            # it corrects for the gravitationally caused shift in pixels
+            # as of this writing it is the angle (eg 0 at 0 deg, 10 at 10deg etc)
             if d > 10 + self.expected_offset:
                 corners_reporting_movement += 1
 
-        # if sum(normed_distance) > 50 + self.expected_offset * 4:
-        #     print("forcing it")
-        #     corners_reporting_movement = 4
-
-        self.last_box_positions.append(box)
-
-        # print(np.array(normed_distance, np.int), corners_reporting_movement, 10 + self.expected_offset / 1.5)
-
-        if len(self.last_box_positions) > 5:
-            self.last_box_positions.pop(0)
-
+        # for debug reasons draw the contours on the grayscale image
         cv2.drawContours(image, [box], -1, 255, 5)
         cv2.drawContours(image, [np.array(self.reference_box, dtype=np.int)], -1, 127, 5)
 
-        # cX, cY = np.int0(np.average(box, axis=0) - np.average(self.reference_box, axis=0))
-        # print(cX, cY)
-        cX, cY = np.int0(np.average(box, axis=0))
-        # draw the contour and center of the shape on the image
+        # get the center of the box
+        cX, cY = np.int64(np.average(box, axis=0))
 
+        # draw the center of the box on the image
         try:
             cv2.circle(image, (cX, cY), 6, 255, -1)
             cv2.circle(image, (cX, cY), 6, 255, -1)
         except OverflowError:
+            # sometimes an overflow error occurs, I think this is fixed but no guarantee that's why its caught
+            # TODO check if it is still a thing
+            rospy.logwarn('CAMERA: Received bad coordinates for center drawing.')
             pass
-            # TODO do something about this
-            # print(cX, cY)
-            # print(box)
 
+        # Publish the debug image
         self.pub.publish(self.bridge.cv2_to_imgmsg(image, encoding='8UC1'))
 
+        # check if more than two corners report movements
         if corners_reporting_movement > 2:
-            print(np.array(normed_distance, np.uint), corners_reporting_movement, self.expected_offset)
+            rospy.loginfo(str(np.array(normed_distance, np.uint)))
             return True
-        else:
-            box = np.array(np.average(self.last_box_positions, axis=0), np.uint)
 
         return False
 
     def receive_camera_data(self, camera_data):
+        # type: (CompressedImage) -> None
+        """
+        Callback for subscriber. Handles every frame and decides for appropriate actions. Basically the main function.
+        :param camera_data: The callback data from the camera
+        """
 
+        # save start time from initial frame
         if self.frame_count == 0:
             self.start_time = time.time()
 
+        # save current time and increment framecount every time
         self.last_time = time.time()
         self.frame_count += 1
 
+        # in case of ignoring incoming messages: exit before the image is even parsed
         if self.FLAG == 'IGNORE':
             return
 
+        # convert image from message to opencv
         np_arr = np.fromstring(camera_data.data, np.uint8)
         image_np = cv2.imdecode(np_arr, cv2.IMREAD_GRAYSCALE)
 
+        # this is the case after a slide to get the correct box for the statistics
         if self.FLAG == 'BOX_ONLY':
             self.current_box = self.get_box_from_image(image_np)
             return
 
+        # run calibration until the calibration function returns true, then switch to sliding detection
         if self.FLAG == 'CALIBRATE':
-            # set initial data for sliding reference
 
+            # set initial data for sliding reference
             self.image_size = image_np.shape
             if self.calibrate_edges(image_np):
                 self.FLAG = 'READY'
-                print('Finished Camera Calibration')
+                rospy.loginfo('Finished Camera Calibration')
             return
 
         elif self.FLAG == 'READY':
-            # check if movement occured and set SLIDING_DETECTED
-
-            # print(camera_data)
-            # cv2.imwrite('test.jpg', image_np)
-
-            # self.get_box_with_ar(image_np)
+            # check if movement occured
             if self.has_cube_moved(image_np):
-                # print("DETECTED SLIDE")
                 self.FLAG = 'BOX_ONLY'
                 self.has_slid = True
             return
@@ -289,9 +342,16 @@ class CameraThread(threading.Thread):
             self.join()
 
     def join(self, timeout=None):
+        # type: (int) -> None
+        """
+        function gets executed at the end of the thread.
+        Reports some statistics, ends rospy and the thread
+        :param timeout:
+        """
         print("Camera Stats")
         print("Average FPS: " + str(self.frame_count / (self.last_time - self.start_time)))
         print("Uptime: " + str((self.last_time - self.start_time)))
         print("Total Frames: " + str(self.frame_count))
         rospy.signal_shutdown('END IT')
         super(CameraThread, self).join(timeout)
+        pass
