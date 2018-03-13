@@ -12,7 +12,6 @@ from afm.camera import CameraThread
 import moveit_commander
 import pickle
 import os
-from afm.data import RobotData
 
 
 def norm_q(q):
@@ -210,21 +209,6 @@ class RobotHandler:
         if plan_dist > 1 and force_small_motion:
             return 'recalibrate', pose_target
         return 'default', pose_target
-
-    def rerun_calibration(self):
-        rd = RobotData('/home/keno/data/cal_10_1')
-
-        dirpath = rd.base_path + '_rerun'
-        os.mkdir(dirpath)
-
-        print("FOUND " + str(len(rd.files)))
-        for i in range(len(rd.files)):
-            all_joint_pos = rd.load_file_index(i)['robot_joint_angles']
-            joint_positions = rd.get_average_joint_position(all_joint_pos)
-            print(joint_positions)
-            self.move_arm_with_joint_control(joint_positions)
-            # todo add proper tracking at some point
-            self.collect_pose_data(dirpath, i)
 
     def collect_pose_data(self, dir_path, index):
 
