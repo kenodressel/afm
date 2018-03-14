@@ -98,9 +98,9 @@ class CameraThread(threading.Thread):
         weights = np.array(weights / sum(weights))
 
         # Log some debug info
-        rospy.loginfo(directions)
-        rospy.loginfo(weights)
-        rospy.loginfo(sorted_dir_index)
+        # rospy.loginfo(directions)
+        # rospy.loginfo(weights)
+        # rospy.loginfo(sorted_dir_index)
 
         # return the indexes of the two best options and a random choice with the weights
         return sorted_dir_index, np.random.choice(sorted_dir_index, 1, p=weights)[0]
