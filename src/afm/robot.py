@@ -577,7 +577,7 @@ class RobotHandler:
             _, d = self.camera.get_next_direction()
 
             # set arm position to 0 for that direction
-            rospy.loginfo("Best Direction is ", d)
+            rospy.loginfo("Best Direction is " + str(d))
             self.set_arm_position(positions[d], (0, 0, 0), force_small_motion=False)
 
             # just to make sure that the robot is still going for the right direction
@@ -668,7 +668,7 @@ class RobotHandler:
 
         # log some debug info
         rospy.loginfo('Found eulers' + str(eulers))
-        rospy.loginfo('Collecting the data took' + str(rospy.get_time() - self.camera.start_of_movement))
+        rospy.loginfo('Collecting the data took ' + str(rospy.get_time() - self.camera.start_of_movement) + ' seconds')
 
         # dump the data into a pickle file
         with open(self.data_directory + '_run_' + str(run) + '.pickle', 'wb') as f:
@@ -740,7 +740,7 @@ class RobotHandler:
         min_angle = max(0, (np.abs(avg) - std * 3)) * np.sign(avg)
         max_angle = min(bounds[direction], (np.abs(avg) + std * 3)) * np.sign(avg)
 
-        rospy.loginfo("Calculated angle range" + str(min_angle * (180 / np.pi)) + ', ' + str(max_angle * (180 / np.pi)))
+        rospy.loginfo("Calculated angle range " + str(min_angle * (180 / np.pi)) + ', ' + str(max_angle * (180 / np.pi)))
 
         # flip the directions. Just do it. This direction thing needs some time investment anyways
         # return angles according to direction
