@@ -46,6 +46,7 @@ class CameraThread(threading.Thread):
         self.frame_count = 0
         self.start_time = 0
         self.last_time = 0
+        self.start_of_movement = 0
 
         # Initializing the publisher for the processed image
         self.bridge = cv_bridge.CvBridge()
@@ -72,7 +73,7 @@ class CameraThread(threading.Thread):
         pass
 
     def get_next_direction(self):
-        # type: () -> Tuple[list, int]
+        # type: () -> tuple[list, int]
         """
         Provides the next movement direction for the robotic arm based on the relative position of the detected cube.
         """
@@ -122,7 +123,7 @@ class CameraThread(threading.Thread):
         # type: (np.array) -> np.array
         """
         Takes image and returns most likely box corners
-        :param image: Raw, grayscale image
+        :param image: numpy array of grayscale pixels
         """
         # applies a simple binary threshold (less than 30 --> white else black)
         ret, thresh = cv2.threshold(image, 30, 255, cv2.THRESH_BINARY_INV)
@@ -138,7 +139,7 @@ class CameraThread(threading.Thread):
         c = cnts[0]
 
         # if there are actually more, find the biggest one.
-        # TODO pick the one that is actually clostest to the last frame
+        # TODO pick the one that is actually closest to the last frame
         if len(cnts) > 1:
             # sort by contour area
             sorted_cnt = sorted(cnts, key=cv2.contourArea, reverse=True)
@@ -321,6 +322,8 @@ class CameraThread(threading.Thread):
 
             # set initial data for sliding reference
             self.image_size = image_np.shape
+            # reset movement timer
+            self.start_of_movement = 0
             if self.calibrate_edges(image_np):
                 self.FLAG = 'READY'
                 rospy.loginfo('Finished Camera Calibration')
@@ -329,6 +332,7 @@ class CameraThread(threading.Thread):
         elif self.FLAG == 'READY':
             # check if movement occured
             if self.has_cube_moved(image_np):
+                self.start_of_movement = rospy.get_time()
                 self.FLAG = 'BOX_ONLY'
                 self.has_slid = True
             return

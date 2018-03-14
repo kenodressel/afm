@@ -14,12 +14,6 @@ import pickle
 import os
 
 
-def norm_q(q):
-    a, b, c, d = q
-    Z = np.sqrt(a ** 2 + b ** 2 + c ** 2 + d ** 2)
-    return np.array([a / Z, b / Z, c / Z, d / Z])
-
-
 class RobotHandler:
     """
     This is the main class of the robot controller
@@ -297,35 +291,56 @@ class RobotHandler:
         # otherwise just return the normal state
         return 'default', pose_target
 
-    def collect_pose_data(self, dir_path, index):
-        a = index
-        collected_data = self.wait_for_data(a)
-
+    def save_pose_data(self, dir_path, a, collected_data):
+        # type: (str, object, dict) -> None
+        """
+        Dump collected data into a pickle file
+        :param collected_data: Data dict that will be saved
+        :param dir_path: the data directory
+        :param a: index of the current run
+        """
+        # dump it into a pickle file
         with open(dir_path + '/' + str(a) + '.pickle', 'wb') as f:
-            print("Got " + str(len(collected_data['robot_pose'])))
+            rospy.loginfo("Got " + str(len(collected_data['robot_pose'])))
             # save data
             pickle.dump(collected_data, f)
-            print('Finished Data Collection')
+            rospy.loginfo('Finished Data Collection')
+        pass
 
     def wait_for_data(self, a, planned_pose=None, amount=50):
+        # type: (object, Pose, int) -> dict
+        """
+        Collect data from a variety of sensors including IMU and joint states
+        :param planned_pose: The OG pose
+        :param a: the angle, only used for identification
+        :param amount: how many data points to average over
+        """
+        # there is no way to collect data if there is no robot connected
         if not self.REAL_ROBOT_CONNECTED:
             raise EnvironmentError('Connect a real robot to gather data.')
 
+        # create a holding dictionary
         collected_data = {
             'angle': a,
             'robot_pose': [PoseStamped()],
             'robot_joint_state': [],
             'robot_joint_angles': [],
             'robot_joint_command': [],
-            'planned_pose': None,
+            'planned_pose': planned_pose,
             'imu_data': [],
             'time': [rospy.get_time(), rospy.get_time()]
         }
 
-        print('Collecting Data')
+        rospy.loginfo('Collecting Data')
+
+        # save starting time of data collection
         collected_data['time'][0] = rospy.get_time()
+
+        # capture as many different poses as specified in the parameters
+        # collect amount + 1 since there is one pose already in the holding dict
         while not rospy.is_shutdown() and len(collected_data['robot_pose']) < amount + 1:
-            rospy.sleep(0.02)
+
+            # if the last pose is not the same as this one collect this one
             if collected_data['robot_pose'][-1].header.seq != self.robot_pose.header.seq:
                 collected_data['robot_pose'].append(self.robot_pose)
                 collected_data['robot_joint_state'].append(self.robot_joint_state)
@@ -333,6 +348,9 @@ class RobotHandler:
                 collected_data['robot_joint_command'].append(self.robot_joint_command)
                 if self.IMU_CONNTECTED:
                     collected_data['imu_data'].append(self.imu_data)
+
+            # sleep for a short time since the next pose is probably not imminent
+            rospy.sleep(0.02)
 
         # remove initial (empty) state
         collected_data['robot_pose'] = collected_data['robot_pose'][1:]
@@ -342,7 +360,13 @@ class RobotHandler:
 
         return collected_data
 
-    def analyze_collected_data(self, collected_data):
+    @staticmethod
+    def analyze_collected_data(collected_data):
+        # type: (dict) -> None
+        """
+        Prints some debug statistics about the collected data
+        :param collected_data: data collected via self.wait_for_data
+        """
         print('average pose data')
         orientation = []
         position = []
@@ -361,165 +385,173 @@ class RobotHandler:
         pass
 
     def run_calibration(self):
+        # type: () -> None
+        """
+        Runs a calibration.
+        This is configurable but in general it runs a specific set of angles and collects data while it does so.
+        It can be used to compare different angular sensors.
+        """
+
+        # Path can be set as required
         dirpath = '/home/keno/data/' + str(rospy.get_time())
         os.mkdir(dirpath)
 
+        # these positions should be adjusted based on the angles the robot will run
         positions = [[0, 0.6, 0.5], [0, 0.6, 0.5], [0, 0.3, 0.7], [0, 0.5, 0.7]]
 
         all_angles = [
-            # [(0, i * np.pi, 0) for i in np.linspace(0, 0.0555555, 11)],
             [(0, i * np.pi, 0) for i in np.linspace(0, 0.25, 90)],
             [(0, - 1 * i * np.pi, 0) for i in np.linspace(0, 0.5, 5)],
             [(i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)],
             [(-1 * i * np.pi, 0, 0) for i in np.linspace(0, 0.375, 4)]
         ]
 
-        # FOR IK X = Y and Y = X
-        # AFTER SWITCH new Y (old X) is still negative
-
+        # for positions
         for i in range(4):
 
             position = positions[i]
             angles = all_angles[i]
 
+            # run all angles
             for a in angles:
 
-                collected_data = {
-                    'angle': a,
-                    'robot_pose': [PoseStamped()],
-                    'robot_joint_state': [],
-                    'robot_joint_angles': [],
-                    'robot_joint_command': [],
-                    'imu_data': [],
-                    'planned_pose': None,
-                    'time': [rospy.get_time(), rospy.get_time()]
-                }
-
-                print("Going to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
-                _, collected_data['planned_pose'] = self.set_arm_position(position, a)
+                rospy.loginfo("Going to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
+                _, planned_pose = self.set_arm_position(position, a)
 
                 # wait for systems to catch up
                 rospy.sleep(1)
 
                 # collect data
-                print('Collecting Data')
-                collected_data['time'][0] = rospy.get_time()
-                while not rospy.is_shutdown() and len(collected_data['robot_pose']) < 51:
-                    rospy.sleep(0.05)
-                    if collected_data['robot_pose'][-1].header.seq != self.robot_pose.header.seq:
-                        collected_data['robot_pose'].append(self.robot_pose)
-                        collected_data['robot_joint_state'].append(self.robot_joint_state)
-                        collected_data['robot_joint_angles'].append(self.robot_joint_angles)
-                        collected_data['robot_joint_command'].append(self.robot_joint_command)
-                        collected_data['imu_data'].append(self.imu_data)
-
-                # if self.REAL_ROBOT_CONNECTED:
-                #     self.get_difference(q, position)
-
-                with open(dirpath + '/' + str(a) + '.pickle', 'wb') as f:
-                    print("Got " + str(len(collected_data['robot_pose'])))
-                    # remove initial (empty) state
-                    collected_data['robot_pose'] = collected_data['robot_pose'][1:]
-                    # get finished time
-                    collected_data['time'][1] = rospy.get_time()
-                    # save data
-                    pickle.dump(collected_data, f)
-                    print('Finished Data Collection')
+                collected_data = self.wait_for_data(a, planned_pose)
+                self.save_pose_data(dirpath, a, collected_data)
 
                 if rospy.is_shutdown():
                     exit(0)
 
+            # gradually reverse back to the robots original position
             for a in reversed(angles[:-1]):
-                print("Resetting to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
+                rospy.loginfo("Resetting to " + str(max(np.abs(a)) * (180 / np.pi)) + " degree")
                 self.set_arm_position(position, a)
-
                 rospy.sleep(1)
 
-            # go to position x
-
-            # record position from robot
-
-            # record joint positions
-
-            # do it in 5 degree steps for + / - 90 degrees in both directions
+        pass
 
     def connect_to_camera(self):
+        # type: () -> None
+        """
+        Starts the camera thread if the camera is available
+        """
         topics = [name for (name, _) in rospy.get_published_topics()]
 
         if '/raspicam_node/image/compressed' in topics:
-            print("============ FOUND camera")
-            print("============ Subscribing to /raspicam_node/image/compressed")
+            rospy.loginfo("FOUND camera, starting thread")
             self.camera = CameraThread()
             self.camera.start()
             self.set_camera_flag('IGNORE')
         else:
-            print("============ COULD NOT find camera, running blind")
+            rospy.logwarn("COULD NOT find camera, running blind")
+
+        pass
 
     def connect_to_real_robot(self):
+        # type: () -> None
+        """
+        Subscribes to a bunch of topics from the (real) robot
+        """
         topics = [name for (name, _) in rospy.get_published_topics()]
 
         if '/j2n6s300_driver/out/tool_pose' in topics:
-            print("============ FOUND real robot")
-            print("============ Subscribing to topics")
+            rospy.loginfo("FOUND real robot")
             rospy.Subscriber("/j2n6s300_driver/out/tool_pose", PoseStamped, self.receive_pose_data)
             rospy.Subscriber("/j2n6s300_driver/out/joint_state", JointState, self.receive_joint_state)
             rospy.Subscriber("/j2n6s300_driver/out/joint_angles", JointAngles, self.receive_joint_angles)
             rospy.Subscriber("/j2n6s300_driver/out/joint_command", JointAngles, self.receive_joint_command)
             self.REAL_ROBOT_CONNECTED = True
         else:
-            print("============ COULD NOT find real robot")
+            rospy.logwarn("COULD NOT find real robot")
+
+        pass
 
     def connect_to_imu(self):
+        # type: () -> None
+        """
+        Subscribes to IMU data feed. Useful for debugging angular movements
+        """
         topics = [name for (name, _) in rospy.get_published_topics()]
 
         if '/mavros/imu/data' in topics:
-            print("============ FOUND real robot")
-            print("============ Subscribing to topics")
+            rospy.loginfo("FOUND IMU")
             rospy.Subscriber("/mavros/imu/data", Imu, self.receive_imu_data)
             self.IMU_CONNTECTED = True
         else:
-            print("============ COULD NOT find real robot")
+            rospy.logwarn("COULD NOT IMU")
+
+        pass
 
     def run_single_experiment_ik(self, position, angles):
-        print("============ Rotating arm")
+        # type: (list or np.array, list or np.array) -> str
+        """
+        Commands the robot to go to a set of angles using inverse kinematics
+        :param position: the position at which these angles should be visited
+        :param angles: an list of lists of euler angles in radian
+        """
 
+        rospy.loginfo("Starting experiment using inverse kinematics")
+
+        # for all angles
         for a in angles:
 
+            # stop in case of ctrl-c or another error
+            if rospy.is_shutdown():
+                self.shutdown()
+
+            # let the camera catch up
             rospy.sleep(0.1)
+
+            # if we have a sliding detected, go and stop the experiment
             if self.camera is not None and self.camera.has_slid:
-                print("SLIDING RECEIVED, STOPPING")
+                rospy.loginfo("Sliding received. Stopping")
                 # self.group.execute(plan1)
                 return "SLIDING"
 
-            print("Going to " + str(max(abs(np.array(a))) * (180 / np.pi)) + " degree")
+            rospy.loginfo("Going to " + str(max(abs(np.array(a))) * (180 / np.pi)) + " degree(s)")
 
+            # set the expected gravity offset equal to the angle
             # TODO REMOVE IF NO GRAVITY OFFSET IS EXPECTED
             self.camera.expected_offset = max(abs(np.array(a))) * (180 / np.pi)
 
+            # set the arm position according to the angle
             status, _ = self.set_arm_position(position, a, force_small_motion=True)
+
+            # run recalibration when the planner thinks its nessesary
             if status == 'recalibrate':
                 self.calibrate_camera()
+
             # allow camera a glimpse
             rospy.sleep(0.1)
-
-            # self.collect_joint_data_and_add_to_library(a)
-
-            if rospy.is_shutdown():
-                exit(0)
 
         return "DONE"
 
     def run_real_experiment(self):
-        # self.camera = []
+        # type: () -> None
+        """
+        Runs an experiment in its length and collects the angle data
+        """
+
+        # throw an exception if the camera or the robot is not connected
         if not self.REAL_ROBOT_CONNECTED or self.camera is None:
             raise EnvironmentError('Camera or Robot not connected')
-        # self.camera = None
 
+        # these positions are in a specific order that correspond to the angles
+        # its also important that the order matches the directions that come from the camera
         positions = [[0, 0.35, 0.5], [0, 0.5, 0.4], [0, 0.4, 0.5], [0, 0.5, 0.4]]
 
-        steps = 50  # 300
+        # how many steps to split the angle range in
+        steps = 50
+        # how many repetitions to perform
         sets = 2000
 
+        # again all angles in radian
         all_angles = [
             [(- 1 * i * np.pi, 0, 0) for i in np.linspace(0.0, 0.375, steps)],
             [(0, i * np.pi, 0) for i in np.linspace(0.0, 0.5, steps)],
@@ -527,133 +559,210 @@ class RobotHandler:
             [(0, -1 * i * np.pi, 0) for i in np.linspace(0.0, 0.5, steps)]
         ]
 
+        # setting the inital direction
         d = 0
+
+        # set the arm position to 0
         self.set_arm_position(positions[d], (0, 0, 0), force_small_motion=False)
         self.calibrate_camera()
 
+        # for each set one repetition
         for i in range(sets):
+            # get start time
             t = rospy.get_time()
-            print("Going for Run ", i)
+
+            rospy.loginfo("Going for Run " + str(i))
+
+            # get the best next direction
             _, d = self.camera.get_next_direction()
-            # d = 0
-            print("Best Direction is ", d)
+
+            # set arm position to 0 for that direction
+            rospy.loginfo("Best Direction is ", d)
             self.set_arm_position(positions[d], (0, 0, 0), force_small_motion=False)
 
-            # just to make sure that we are still going for the right direction
+            # just to make sure that the robot is still going for the right direction
             directions, _ = self.camera.get_next_direction()
             if d not in directions:
                 continue
 
-            # wait until we are surely in the right position
+            # recalibrate
             self.calibrate_camera()
 
+            # if there is enough data start using the standard deviation for the angle range
+            # instead of the angles supplied above
             if len(self.sliding_data[d]) < 25:
                 angles = all_angles[d]
             else:
                 angles = self.get_angles_for_direction(d)
 
+            # run the experiment with the angles
             if self.run_single_experiment_ik(positions[d], angles) == 'SLIDING':
+                # if some sliding happens, collect the angles and reset the camera
                 self.collect_sliding_angles(i, d)
                 self.camera.has_slid = False
-            print("Set took", rospy.get_time() - t)
-            # with open(self.data_directory + '_stats_pickle.plans', 'wb') as f:
-            #     pickle.dump(self.plan_stats, f)
+            #
+            rospy.loginfo("Set took " + str(rospy.get_time() - t) + ' seconds')
 
+        # reset the arm one more time
         self.set_arm_position(positions[d], (0, 0, 0), force_small_motion=False)
-        self.calibrate_camera()
 
+        # shutdown
         self.shutdown()
 
+        pass
+
     def calibrate_camera(self):
+        # type: () -> None
+        """
+        Sets the camera to calibration mode
+        """
+        # throw an exception if no camera is detected
         if self.camera is None:
             raise EnvironmentError('No camera found')
 
+        # start the calibration in the camera thread
         self.camera.start_calibration()
 
+        # wait until the calibration is finished
         while not rospy.is_shutdown() and self.camera.FLAG == 'CALIBRATE':
-            rospy.sleep(1)
-            pass
+            rospy.sleep(0.1)
+
+        pass
 
     def collect_sliding_angles(self, run, direction):
+        # type: (int, int) -> None
+        """
+        Collects the sliding angles at a given time
+        :param run: index of the run
+        :param direction: direction the robot turned in
+        """
+
+        # define some empty variables
         results = []
         eulers = []
         images = []
 
+        # collect three eulers and images
         for i in range(3):
             rospy.sleep(0.1)
             eulers.append(self.get_current_euler())
             if self.camera is not None:
                 images.append(self.camera.current_image)
 
+        # calculate the average angle
         eulers = np.average(eulers, axis=0)
 
+        # create the results dict
         results.append({
             'euler': eulers,
             'time': rospy.get_time(),
             'reference_box': self.camera.reference_box,
             'expected_variance': self.camera.expected_variance,
             'current_box': self.camera.current_box,
-            'direction': direction
+            'direction': direction,
+            'movement_timing': [self.camera.start_of_movement, rospy.get_time()]
         })
 
+        # append the angle to the internal angle storage
         self.sliding_data[direction].append(eulers[np.argmax(np.abs(eulers[:-1]))])
 
-        print('FOUND EULERS', eulers)
+        # log some debug info
+        rospy.loginfo('Found eulers' + str(eulers))
+        rospy.loginfo('Collecting the data took' + str(rospy.get_time() - self.camera.start_of_movement))
 
+        # dump the data into a pickle file
         with open(self.data_directory + '_run_' + str(run) + '.pickle', 'wb') as f:
             pickle.dump(results, f)
 
+        # reset the camera
         self.camera.has_slid = False
+
         pass
 
     def load_previous_sliding_data(self):
+        # type: () -> None
+        """
+        Load all previous pickle files to rebuild the angle library
+        """
+
+        # define some empty variables
         data = []
 
+        # find all files and load them
         for f in glob.glob('/home/keno/data/sliding/*.pickle'):
             with open(f, 'rb') as f:
                 d = pickle.load(f)
                 data += [a['euler'] for a in d]
 
+        # this mapping basically maps from the collected data to the internal direction
         mapping = [-2, -1, +2, 1]
 
+        # empty angle library
         angles = [[], [], [], []]
+
+        # reformat data
         for d in data:
-            # no z axis
+            # remove z axis
             eulers = d[:-1]
+
+            # find the direction based on the angle
             d = mapping.index((np.argmax(np.abs(eulers)) + 1) * np.sign(eulers[np.argmax(np.abs(eulers))]))
+
+            # get the max value
             a = eulers[np.argmax(np.abs(eulers))]
+
+            # append it to the library
             angles[d].append(a)
 
+        # set angle library equal to the current angles
         self.sliding_data = angles
 
+        pass
+
     def get_angles_for_direction(self, direction):
+        # type: (int) -> list
+        """
+        Returns a range of angles based on previous angles
+        :param direction: 0 - 3 direction
+        """
+
+        # get all previous angles
         previous_angles = self.sliding_data[direction]
 
+        # generate some stats
         avg = np.average(previous_angles)
         std = np.std(previous_angles)
 
+        # these are the upper bounds. Again order matters
         bounds = [0.375 * np.pi, 0.5 * np.pi, 0.375 * np.pi, 0.5 * np.pi]
 
+        # get get the max and min angle
         min_angle = max(0, (np.abs(avg) - std * 3)) * np.sign(avg)
         max_angle = min(bounds[direction], (np.abs(avg) + std * 3)) * np.sign(avg)
 
-        print("calculated angle range", direction, min_angle * (180 / np.pi), max_angle * (180 / np.pi))
+        rospy.loginfo("Calculated angle range" + str(min_angle * (180 / np.pi)) + ', ' + str(max_angle * (180 / np.pi)))
 
+        # flip the directions. Just do it. This direction thing needs some time investment anyways
+        # return angles according to direction
         if direction == 0 or direction == 2:
-            # for some reason this direction has to be flipped
             return [(i, 0, 0) for i in np.linspace(min_angle, max_angle, 50)]
         if direction == 1 or direction == 3:
             return [(0, i, 0) for i in np.linspace(min_angle * -1, max_angle * -1, 50)]
 
     def shutdown(self):
-        print("============ WAITING ON CAMERA FOR SHUTDOWN")
-        # self.set_camera_flag('SHUTDOWN')
+        # type: () -> None
+        """
+        Shuts the controller and camera down
+        """
+        rospy.loginfo("Shutting down camera")
+
         if self.camera is not None:
             self.camera.join()
-        print("============ SHUTDOWN COMPLETED")
-        print("============ Everything finished. Now Crashing. RIP")
+        rospy.loginfo("Camera shutdown completed")
 
-        # it fails because its a know issue
+        # it fails because of a know issue
         # https://github.com/ros-planning/moveit/issues/331
         moveit_commander.roscpp_shutdown()
-        return exit(1)
+        rospy.signal_shutdown('Done')
+        rospy.loginfo("Everything finished. Now Crashing. RIP")
+        return exit(0)
